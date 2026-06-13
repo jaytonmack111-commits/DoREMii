@@ -26,6 +26,9 @@ export type LmModelId =
   | 'acestep-5Hz-lm-1.7B'
   | 'acestep-5Hz-lm-4B'
 
+/** Which heavy AI brain is currently active (VRAM conductor). */
+export type ConductorState = 'idle' | 'writer' | 'engine'
+
 export interface EngineSettings {
   preferredLmModel: LmModelId
   lmBackend: 'vllm' | 'pt' | 'mlx'
@@ -343,6 +346,8 @@ export interface DoReMiApi {
   enhanceText: (input: { kind: 'style' | 'idea' | 'lyrics'; text: string; tags?: string[]; model?: string; think?: boolean }) => Promise<string>
   suggestTitle: (input: { lyrics: string; idea?: string; model?: string }) => Promise<string>
   generateConcept: (input?: { think?: boolean; model?: string }) => Promise<{ title: string; idea: string; style: string }>
+  getConductorState: () => Promise<ConductorState>
+  onConductorState: (callback: (state: ConductorState) => void) => () => void
   rewriteLyrics: (input: { lyrics: string; idea?: string; instruction: string; model?: string; intent?: SongIntent }) => Promise<LyricsCraftResult>
   startWritersRoom: (input: { idea: string; tags: string[]; lyrics: string; caption: string; model?: string; intent?: SongIntent }) => Promise<RoomState>
   sendToWritersRoom: (text: string) => Promise<RoomState>

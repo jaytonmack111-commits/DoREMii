@@ -8,6 +8,7 @@ import { createBlueprint, createGeneration, formatWithEngine, pollGeneration } f
 import { downloadModel, getEngineSettings, listLocalModels, openModelFolder, updateEngineSettings } from './modelSettings.js'
 import { analyzeLyrics, craftLyrics, enhanceText, generateConcept, isWriterAvailable, listWriterModels, pullOllamaModel, rewriteLyrics, suggestTitle } from './ollamaService.js'
 import { endRoom, sendToRoom, startRoom } from './writersRoomService.js'
+import { beginEngineJob, endEngineJob, getConductorState, withWriter } from './aiConductor.js'
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
 
@@ -81,22 +82,31 @@ app.whenReady().then(async () => {
   ipcMain.handle('library:showInFolder', (_event, id) => showSongInFolder(id))
   ipcMain.handle('presets:list', () => listPresets())
   ipcMain.handle('licenses:list', () => listLicenses())
-  ipcMain.handle('generation:create', (_event, request) => createGeneration(request))
-  ipcMain.handle('generation:blueprint', (_event, request) => createBlueprint(request))
+  // Generation owns the GPU: sleep Ollama first, release it when a poll ends.
+  ipcMain.handle('generation:create', async (_event, request) => {
+    await beginEngineJob()
+    return createGeneration(request)
+  })
+  ipcMain.handle('generation:blueprint', (_event, request) => withWriter(() => createBlueprint(request)))
   ipcMain.handle('generation:formatInput', (_event, input) => formatWithEngine(input))
-  ipcMain.handle('generation:poll', (_event, aceTaskId, meta) => pollGeneration(aceTaskId, meta))
+  ipcMain.handle('generation:poll', async (_event, aceTaskId, meta) => {
+    const result = await pollGeneration(aceTaskId, meta)
+    if (result.status === 'succeeded' || result.status === 'failed') endEngineJob()
+    return result
+  })
   ipcMain.handle('writer:availability', () => isWriterAvailable())
   ipcMain.handle('writer:models', () => listWriterModels())
   ipcMain.handle('writer:pullModel', (_event, model) => pullOllamaModel(model))
-  ipcMain.handle('writer:analyzeLyrics', (_event, input) => analyzeLyrics(input))
-  ipcMain.handle('writer:rewriteLyrics', (_event, input) => rewriteLyrics(input))
+  ipcMain.handle('writer:analyzeLyrics', (_event, input) => withWriter(() => analyzeLyrics(input)))
+  ipcMain.handle('writer:rewriteLyrics', (_event, input) => withWriter(() => rewriteLyrics(input)))
   ipcMain.handle('room:start', (_event, input) => startRoom(input))
   ipcMain.handle('room:send', (event, text) => sendToRoom(event.sender, text))
   ipcMain.handle('room:end', () => endRoom())
-  ipcMain.handle('writer:craftLyrics', (_event, input) => craftLyrics(input))
-  ipcMain.handle('writer:enhanceText', (_event, input) => enhanceText(input))
-  ipcMain.handle('writer:suggestTitle', (_event, input) => suggestTitle(input))
-  ipcMain.handle('writer:generateConcept', (_event, input) => generateConcept(input))
+  ipcMain.handle('writer:craftLyrics', (_event, input) => withWriter(() => craftLyrics(input)))
+  ipcMain.handle('writer:enhanceText', (_event, input) => withWriter(() => enhanceText(input)))
+  ipcMain.handle('writer:suggestTitle', (_event, input) => withWriter(() => suggestTitle(input)))
+  ipcMain.handle('writer:generateConcept', (_event, input) => withWriter(() => generateConcept(input)))
+  ipcMain.handle('conductor:state', () => getConductorState())
 
   createWindow()
 

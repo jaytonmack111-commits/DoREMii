@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { EngineStatus, SetupCheckResult, SongVersion } from '../shared/types'
+import type { ConductorState, EngineStatus, SetupCheckResult, SongVersion } from '../shared/types'
 import { useUiStore } from './uiStore'
 
 const defaultEngine: EngineStatus = {
@@ -21,6 +21,7 @@ interface AppStore {
   songs: SongVersion[]
   logs: string[]
   busy: boolean
+  conductor: ConductorState
   setSongs: (songs: SongVersion[]) => void
   pushLog: (line: string) => void
   refreshAll: () => Promise<void>
@@ -40,6 +41,7 @@ export const useAppStore = create<AppStore>((set) => ({
   songs: [],
   logs: [],
   busy: false,
+  conductor: 'idle',
   setSongs: (songs) => set({ songs }),
   pushLog: (line) => set((s) => ({ logs: [line, ...s.logs] })),
   refreshAll: async () => {
@@ -115,4 +117,8 @@ export function initApp() {
   engineWatcher = window.setInterval(() => {
     void window.doReMi.getEngineStatus().then((engine) => useAppStore.setState({ engine }))
   }, 4000)
+
+  // VRAM conductor: reflect which AI brain is active.
+  void window.doReMi.getConductorState().then((conductor) => useAppStore.setState({ conductor }))
+  window.doReMi.onConductorState((conductor) => useAppStore.setState({ conductor }))
 }

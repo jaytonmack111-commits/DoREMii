@@ -524,6 +524,16 @@ div.instrumental-note.idea-area { display: flex; align-items: center; gap: 10px;
   50% { box-shadow: 0 0 calc(var(--glow) * 0.8) rgba(var(--accent-rgb), 0.45); }
 }
 
+/* VRAM conductor status chip in the top bar. */
+.conductor-chip {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 30px; padding: 0 12px;
+  border-radius: 999px; font-size: calc(12px * var(--font-scale)); font-weight: 700;
+  border: 1px solid rgba(var(--accent-rgb), 0.5); color: var(--text);
+  background: rgba(var(--accent-rgb), 0.14);
+  animation: queuePulse 1.6s ease-in-out infinite;
+}
+.conductor-chip.engine { border-color: rgba(var(--accent-2-rgb), 0.55); background: rgba(var(--accent-2-rgb), 0.14); }
+
 /* Compact horizontal creations strip pinned at the page bottom. */
 .creations-strip { flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px; }
 .creations-strip-head { display: flex; align-items: center; justify-content: space-between; }

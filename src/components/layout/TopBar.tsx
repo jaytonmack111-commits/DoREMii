@@ -1,4 +1,4 @@
-import { Bell, Palette } from 'lucide-react'
+import { AudioLines, Bell, Palette, PenLine } from 'lucide-react'
 import { useAppStore } from '../../stores/appStore'
 import { useUiStore } from '../../stores/uiStore'
 
@@ -13,7 +13,7 @@ function engineLabel(engine: ReturnType<typeof useAppStore.getState>['engine'], 
 
 export function TopBar() {
   const { setRoute, setShowThemes, soon } = useUiStore()
-  const { engine, busy, startEngine, stopEngine, restartEngine } = useAppStore()
+  const { engine, busy, conductor, startEngine, stopEngine, restartEngine } = useAppStore()
   const engineReady = engine.health === 'ready'
   const warming = engine.health === 'warming' || engine.state === 'starting'
 
@@ -34,6 +34,11 @@ export function TopBar() {
         <button className="round-btn" onClick={() => setRoute('studio')} aria-label="Studio">›</button>
       </div>
       <div className="topbar-right">
+        {conductor !== 'idle' && (
+          <span className={`conductor-chip ${conductor}`} title="Only one heavy AI runs at a time to keep your GPU fast">
+            {conductor === 'writer' ? <><PenLine size={13} /> Writer working</> : <><AudioLines size={13} /> Engine generating</>}
+          </span>
+        )}
         <button type="button" className="themes-trigger" onClick={() => setShowThemes(true)}>
           <Palette size={15} /> Themes
         </button>

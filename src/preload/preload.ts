@@ -64,6 +64,12 @@ const api: DoReMiApi = {
   enhanceText: (input) => ipcRenderer.invoke('writer:enhanceText', input),
   suggestTitle: (input) => ipcRenderer.invoke('writer:suggestTitle', input),
   generateConcept: (input) => ipcRenderer.invoke('writer:generateConcept', input),
+  getConductorState: () => ipcRenderer.invoke('conductor:state'),
+  onConductorState: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: 'idle' | 'writer' | 'engine') => callback(state)
+    ipcRenderer.on('conductor:state', handler)
+    return () => { ipcRenderer.off('conductor:state', handler) }
+  },
 }
 
 contextBridge.exposeInMainWorld('doReMi', api)
