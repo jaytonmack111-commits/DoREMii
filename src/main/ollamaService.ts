@@ -7,7 +7,6 @@ const OLLAMA_URL = 'http://127.0.0.1:11434'
 /** Default writer follows the user's observed best local lyric behavior; 14B stays available for deep rewrite/critique. */
 const WRITER_MODELS = ['qwen3:8b', 'qwen3:14b']
 const ROOM_MODELS = ['qwen3:4b', 'qwen3:1.7b', 'llama3.2:3b', 'qwen3:8b', 'qwen3:14b']
-const FINAL_MARKER = '###DOREMII_FINAL###'
 const THINK_CTX = 16384
 const CHAT_CTX = 8192
 const MAX_OUTPUT_TOKENS = 2800
@@ -93,14 +92,13 @@ export async function chatRaw(model: string, messages: ChatMessage[], temperatur
 
 async function chat(model: string, messages: ChatMessage[], temperature: number, think: boolean, signalLabel: string): Promise<{ text: string; thinkBlock: string | null }> {
   const qwenThinkingModel = /^qwen3:/i.test(model)
-  const finalMessages = qwenThinkingModel && !think
-    ? messages.map((message, index) => ({
-        ...message,
-        content: index === 0
-          ? `${message.content}\n\nFor this app, your usable answer MUST appear after this exact marker on its own line: ${FINAL_MARKER}. Put all chat replies, directives, or lyrics after that marker. Keep the final answer concise.\n/no_think`
-          : `${message.content}\n\nEnd with ${FINAL_MARKER} on its own line, followed by only the usable answer.\n/no_think`,
-      }))
-    : messages
+  // RELIABILITY: qwen3 small models ignore /no_think and reason in plain
+  // content (no <think> tags), which used to leak into output and get rejected.
+  // Force the NATIVE thinking channel on for qwen3 so reasoning lands in
+  // message.thinking and message.content is always the clean answer. The
+  // requested `think` flag now only sizes the context window.
+  const apiThink = qwenThinkingModel ? true : think
+  const finalMessages = messages
   // Watchdog: if the model produces NO tokens for this long, it is starved
   // (e.g. ACE holds the VRAM and the model is paging) - abort instead of
   // hanging the whole pipeline for ten minutes.
@@ -122,7 +120,7 @@ async function chat(model: string, messages: ChatMessage[], temperature: number,
         model,
         messages: finalMessages,
         stream: true,
-        think,
+        think: apiThink,
         keep_alive: '15m',
         options: {
           temperature,
@@ -182,31 +180,21 @@ async function chat(model: string, messages: ChatMessage[], temperature: number,
     clearTimeout(stallTimer)
   }
 
-  let text = streamedText.trim()
+  let text = stripReasoning(streamedText.trim())
   let thinkBlock = streamedThinking.trim() || null
-  if (!think && text.includes(FINAL_MARKER)) {
-    const markerIndex = text.lastIndexOf(FINAL_MARKER)
-    const beforeFinal = text.slice(0, markerIndex).trim()
-    const afterFinal = text.slice(markerIndex + FINAL_MARKER.length).trim()
-    thinkBlock = [thinkBlock, beforeFinal].filter(Boolean).join('\n\n') || null
-    text = afterFinal
-  }
-  if (!think && qwenThinkingModel && !text.includes(FINAL_MARKER) && text.length > 500 && /(\bthe user wants\b|\blet me\b|\bbrainstorm|\bsteps:|\busable answer\b)/i.test(text)) {
-    throw new Error(`Ollama ${signalLabel} returned reasoning instead of a usable answer`)
-  }
-  
-  if (!text && thinkBlock && !think) {
-    throw new Error(`Ollama ${signalLabel} only returned thinking text; retry with a smaller prompt or higher token budget`)
-  }
-  if (!text && !thinkBlock) throw new Error(`Ollama ${signalLabel} returned an empty response`)
-  
+  // Pull any stray <think> block out of the content channel into thinking.
   if (!thinkBlock) {
-    const thinkMatch = text.match(/<think>([\s\S]*?)<\/think>/)
-    if (thinkMatch) {
-      thinkBlock = thinkMatch[1].trim()
-      text = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
-    }
+    const thinkMatch = streamedText.match(/<think>([\s\S]*?)<\/think>/)
+    if (thinkMatch) thinkBlock = thinkMatch[1].trim()
   }
+  // If the model reasoned in plain content anyway, salvage the real answer
+  // instead of throwing - never hard-fail the pipeline on a reasoning leak.
+  text = stripLeakedReasoning(text)
+  // Last resort: if content is empty but we have thinking, recover its tail.
+  if (!text && thinkBlock) {
+    text = thinkBlock.split(/\n+/).filter(Boolean).slice(-6).join('\n')
+  }
+  if (!text) throw new Error(`Ollama ${signalLabel} returned an empty response`)
 
   return { text, thinkBlock }
 }
