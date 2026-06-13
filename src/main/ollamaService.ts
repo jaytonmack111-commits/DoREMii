@@ -653,6 +653,18 @@ export async function isWriterAvailable(): Promise<{ available: boolean; model: 
   }
 }
 
+/** Strip qwen3 reasoning from content. Handles three shapes seen in the wild:
+ *  full <think>...</think> blocks, a dangling </think> with NO opening tag
+ *  (qwen3 emits this with think=false - the real cause of the leak), and clean
+ *  content with neither. Always keep only what follows the LAST </think>. */
+function stripReasoning(raw: string): string {
+  let text = raw
+  const closeIdx = text.lastIndexOf('</think>')
+  if (closeIdx !== -1) text = text.slice(closeIdx + '</think>'.length)
+  text = text.replace(/<think>[\s\S]*?<\/think>/g, '')
+  return text.trim()
+}
+
 /** Clean single-shot completion that AVOIDS the FINAL_MARKER hack entirely.
  *  The marker hack (used by the lyric pipeline to suppress qwen3 thinking)
  *  confused the model into reasoning ABOUT the marker and leaking that
@@ -692,7 +704,7 @@ export async function ollamaComplete(
     if (!response.ok) throw new Error(`Ollama HTTP ${response.status}`)
     const body = await response.json() as { message?: { content?: string; thinking?: string }; error?: string }
     if (body.error) throw new Error(body.error)
-    let text = (body.message?.content ?? '').replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+    let text = stripReasoning(body.message?.content ?? '')
     // If everything ended up in the thinking channel, recover the tail of it.
     if (!text && body.message?.thinking) {
       const lines = body.message.thinking.trim().split(/\n+/).filter(Boolean)
