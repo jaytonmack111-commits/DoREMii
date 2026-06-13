@@ -16,6 +16,17 @@ interface ChatMessage {
   content: string
 }
 
+function tokenBudgetFor(signalLabel: string, think: boolean) {
+  if (/adherence/i.test(signalLabel)) return 260
+  if (/flow/i.test(signalLabel)) return 420
+  if (/critique|analysis/i.test(signalLabel)) return 650
+  if (/scene/i.test(signalLabel)) return 650
+  if (/title/i.test(signalLabel)) return 80
+  if (/concept/i.test(signalLabel)) return 700
+  if (/rewrite|draft/i.test(signalLabel)) return 1500
+  return think ? 1500 : 900
+}
+
 // Tuned to ACE-Step's official musicians guide: lyrics are a TEMPORAL SCRIPT
 // the music model reads, with its own tag language. Teaching the writer that
 // dialect matters more than poetic ambition.
@@ -125,7 +136,7 @@ async function chat(model: string, messages: ChatMessage[], temperature: number,
         options: {
           temperature,
           num_ctx: think ? THINK_CTX : CHAT_CTX,
-          num_predict: MAX_OUTPUT_TOKENS,
+          num_predict: Math.min(MAX_OUTPUT_TOKENS, tokenBudgetFor(signalLabel, think)),
         },
       }),
     })
@@ -707,7 +718,7 @@ export async function ollamaComplete(
           { role: 'system', content: system },
           { role: 'user', content: userContent },
         ],
-        options: { temperature, num_ctx: think ? THINK_CTX : CHAT_CTX, num_predict: MAX_OUTPUT_TOKENS },
+        options: { temperature, num_ctx: think ? THINK_CTX : CHAT_CTX, num_predict: Math.min(MAX_OUTPUT_TOKENS, tokenBudgetFor('completion', think)) },
       }),
     })
     if (!response.ok) throw new Error(`Ollama HTTP ${response.status}`)
@@ -731,6 +742,25 @@ const ENHANCE_PROMPTS: Record<'style' | 'idea' | 'lyrics', string> = {
   lyrics: `You are a lyric editor. Improve the user's lyrics IN PLACE: keep their structure tags, story, and most of their words. Fix weak lines, rhythm, and rhyme; tighten syllables for singability (6-10 per line). Reply with ONLY the improved lyrics, nothing else.`,
 }
 
+function extractJsonAnswer(raw: string) {
+  const match = raw.match(/\{[\s\S]*\}/)
+  if (!match) return ''
+  try {
+    const parsed = JSON.parse(match[0]) as { answer?: string }
+    return (parsed.answer ?? '').trim()
+  } catch {
+    return ''
+  }
+}
+
+function cleanQuotedText(value: string) {
+  return value.replace(/^["'\u201c]+|["'\u201d]+$/g, '').trim()
+}
+
+function looksLikeExplanation(value: string) {
+  return /why this one|first sentence|second sentence|rationale|here'?s why|because:/i.test(value)
+}
+
 /** Single-shot text improver for the Studio's Enhance buttons. Ollama-only,
  *  so it works even while ACE is still warming. */
 export async function enhanceText(input: { kind: 'style' | 'idea' | 'lyrics'; text: string; tags?: string[]; model?: string; think?: boolean }): Promise<string> {
@@ -750,8 +780,20 @@ export async function enhanceText(input: { kind: 'style' | 'idea' | 'lyrics'; te
     think: true,
     temperature: 0.7,
   })
-  const cleaned = stripLeakedReasoning(improved).replace(/^["'“]+|["'”]+$/g, '').trim()
+  let cleaned = cleanQuotedText(stripLeakedReasoning(improved))
+  if (looksLikeExplanation(cleaned)) {
+    const jsonImproved = await ollamaComplete(
+      model,
+      `${ENHANCE_PROMPTS[input.kind]}\n\nReply as STRICT JSON only: {"answer":"the rewritten text"}. Do not include bullets, markdown, rationale, or commentary.`,
+      `${text}${tagLine}`,
+      { think: true, temperature: 0.55 },
+    )
+    cleaned = cleanQuotedText(extractJsonAnswer(jsonImproved) || stripLeakedReasoning(jsonImproved))
+  }
   if (!cleaned) throw new Error('The writer returned nothing - try again or raise thinking power.')
+  if (looksLikeExplanation(cleaned)) {
+    throw new Error('The writer returned analysis instead of a clean rewrite - try again or switch to a stronger writer model.')
+  }
   return cleaned
 }
 
@@ -789,34 +831,84 @@ export async function suggestTitle(input: { lyrics: string; idea?: string; model
   }
 }
 
-const RANDOM_GENRES = ['dream pop', 'drill', 'neo-soul', 'post-rock', 'synthwave', 'bluegrass', 'shoegaze', 'afrobeats', 'industrial techno', 'bedroom pop', 'cinematic orchestral', 'lo-fi hip-hop', 'flamenco', 'gospel house', 'darkwave', 'jazz fusion']
-const RANDOM_THEMES = ['a lighthouse keeper losing track of time', 'the last train out of a dying town', 'two rivals who can only speak through music', 'a city that forgets its own name', 'falling for someone in a recurring dream', 'a machine learning what longing feels like', 'the morning after everything changed', 'dancing through grief at a stranger\'s wedding']
+const RANDOM_GENRES = ['dream pop', 'drill', 'neo-soul', 'post-rock', 'synthwave', 'bluegrass', 'shoegaze', 'afrobeats', 'industrial techno', 'bedroom pop', 'cinematic orchestral', 'lo-fi hip-hop', 'flamenco', 'gospel house', 'darkwave', 'jazz fusion', 'hyperpop', 'alt-country', 'UK garage', 'progressive metal', 'bossa nova', 'future funk', 'ambient folk', 'punk rap']
+const RANDOM_THEMES = [
+  'a baker hiding apology notes inside fortune cookies',
+  'a night-shift nurse singing to the hospital elevators',
+  'two neighbors who only meet during power outages',
+  'a kid building a cardboard spaceship in a laundromat',
+  'an ex-racer fixing bicycles for strangers after midnight',
+  'a retired magician losing tricks but keeping one impossible coin',
+  'a desert motel clerk collecting postcards from guests who never arrive',
+  'friends turning a flooded basement into a dance floor',
+  'a beekeeper learning to forgive a storm',
+  'a street painter racing the rain before the mural disappears',
+  'a choir practicing in an empty roller rink',
+  'a chef trying to recreate a song from a childhood radio',
+  'a security guard befriending a museum statue during thunderstorms',
+  'a diver finding a wedding ring tied to a coral branch',
+  'a rooftop gardener throwing a sunrise party for one lonely tenant',
+  'a mechanic making a lullaby from broken dashboard chimes',
+]
+const RANDOM_STRUCTURES = [
+  'character portrait: one person, one place, one object, one emotional change',
+  'mini movie: cold open, problem, risky choice, consequence, final image',
+  'letter song: the singer writes to someone absent and admits the real truth late',
+  'party snapshot: crowded scene, private secret, chorus as the release',
+  'mythic ordinary: make a tiny everyday event feel legendary without fantasy cliches',
+  'confession: the singer starts proud, cracks in verse two, and resolves in the outro',
+  'roadside scene: one location, strangers crossing paths, a hook built on overheard words',
+  'memory object: a physical item triggers three time jumps and a final decision',
+  'call-and-response idea: narrator versus group, chorus answers the verses',
+  'comic-to-heartfelt: starts funny and specific, turns sincere without getting vague',
+]
+const BANNED_CONCEPT_PHRASES = [
+  'last train',
+  'dying town',
+  'find the one moment',
+  'find the moment',
+  'moment it turns',
+  'build the whole story toward it',
+  'recurring dream',
+]
+let recentConceptSeeds: string[] = []
 
 /** AI-backed Random Idea: returns a DISTINCT concept and production style
  *  (one is about meaning, the other about sound) instead of two near-identical
  *  one-liners. Falls back to seeded randoms if the writer is unavailable. */
 export async function generateConcept(input?: { think?: boolean; model?: string }): Promise<{ title: string; idea: string; style: string }> {
   const model = await pickWriterModel(input?.model)
+  const pick = (items: string[]) => items[Math.floor(Math.random() * items.length)]
+  const remember = (seed: string) => {
+    recentConceptSeeds = [seed, ...recentConceptSeeds.filter((item) => item !== seed)].slice(0, 6)
+  }
   const fallback = () => {
-    const g = RANDOM_GENRES[Math.floor(Math.random() * RANDOM_GENRES.length)]
-    const t = RANDOM_THEMES[Math.floor(Math.random() * RANDOM_THEMES.length)]
+    const availableThemes = RANDOM_THEMES.filter((theme) => !recentConceptSeeds.includes(theme))
+    const g = pick(RANDOM_GENRES)
+    const t = pick(availableThemes.length ? availableThemes : RANDOM_THEMES)
+    const structure = pick(RANDOM_STRUCTURES)
+    remember(t)
     return {
       title: '',
-      idea: `A song about ${t}. Find the one moment it turns, and build the whole story toward it.`,
-      style: `${g} with a clear lead vocal, a distinctive hook instrument, and a mix that leaves space - intro builds, choruses open up, outro resolves.`,
+      idea: `A ${structure} song about ${t}. The verses show what happens in concrete scenes, the chorus turns one physical image into the hook, and the outro lands on a clear choice instead of a vague feeling.`,
+      style: `${g} with a distinct lead vocal, one signature hook instrument, a specific drum pocket, and a mix texture that changes between intimate verses and wider choruses.`,
     }
   }
   if (!model) return fallback()
   try {
-    const seedGenre = RANDOM_GENRES[Math.floor(Math.random() * RANDOM_GENRES.length)]
-    const seedTheme = RANDOM_THEMES[Math.floor(Math.random() * RANDOM_THEMES.length)]
+    const seedGenre = pick(RANDOM_GENRES)
+    const availableThemes = RANDOM_THEMES.filter((theme) => !recentConceptSeeds.includes(theme))
+    const seedTheme = pick(availableThemes.length ? availableThemes : RANDOM_THEMES)
+    const seedStructure = pick(RANDOM_STRUCTURES)
+    remember(seedTheme)
     const raw = await ollamaComplete(
       model,
       `You are a hit-making music concept generator. Invent ONE original, specific, emotionally gripping song concept. Reply as STRICT JSON on a single line, nothing before or after:
 {"title":"a short evocative title (2-5 words)","idea":"3-4 sentences telling the ACTUAL STORY: name a specific character or narrator, a specific place and moment, what literally happens, the emotional turn, and the one concrete image the song centers on. Do NOT write vague meta like 'find the moment it turns' - actually describe the moment.","style":"2-3 sentences of concrete production detail: genre and subgenre, 2-3 specific instruments, the drum/rhythm feel, tempo in words, vocal character, era, and one production texture (e.g. tape warmth, cavernous reverb, gritty lo-fi)."}
-The "idea" is the STORY (who, where, what happens); the "style" is the SOUND. They must be clearly different. Be vivid, concrete, and surprising - never generic filler.`,
-      `Loose inspiration to reinterpret freely (don't copy literally): theme "${seedTheme}", a flavour of ${seedGenre}. Write the full concept now with a real story and rich production detail.`,
-      { think: true, temperature: 1.05 },
+The "idea" is the STORY (who, where, what happens); the "style" is the SOUND. They must be clearly different. Be vivid, concrete, and surprising - never generic filler.
+Hard bans: do not use trains, dying towns, recurring dreams, or phrases like "find the moment it turns."`,
+      `Loose inspiration to reinterpret freely (don't copy literally): theme "${seedTheme}", a flavour of ${seedGenre}, structure "${seedStructure}". Recent seeds to avoid repeating: ${recentConceptSeeds.join('; ') || 'none'}. Write the full concept now with a real story and rich production detail.`,
+      { think: true, temperature: 1.18 },
     )
     const cleaned = stripLeakedReasoning(raw)
     const match = cleaned.match(/\{[\s\S]*\}/)
@@ -824,7 +916,9 @@ The "idea" is the STORY (who, where, what happens); the "style" is the SOUND. Th
       const parsed = JSON.parse(match[0]) as { title?: string; idea?: string; style?: string }
       const idea = (parsed.idea || '').trim()
       const style = (parsed.style || '').trim()
-      if (idea.length > 40 && style.length > 30) return { title: (parsed.title || '').trim(), idea, style }
+      const combined = `${parsed.title ?? ''} ${idea} ${style}`.toLowerCase()
+      const banned = BANNED_CONCEPT_PHRASES.some((phrase) => combined.includes(phrase))
+      if (!banned && idea.length > 80 && style.length > 45) return { title: (parsed.title || '').trim(), idea, style }
     }
     return fallback()
   } catch {
@@ -1012,11 +1106,13 @@ export async function craftLyrics(input: {
   ], 0.9, true, 'draft')
   const draft = draftRes.text
 
-  // Passes 2..n - critic loop: critique, rewrite, re-critique. Max 3 rewrites.
+  // Passes 2..n - critic loop: critique, rewrite, re-critique. Keep this tight
+  // for Blueprint UX; deeper "let it cook" passes belong behind a Pro control.
   let current = draft
   let critique: string
   let validationIssues = validateLyrics(current, input.intent, input.idea)
-  for (let round = 0; round < 3; round += 1) {
+  const maxRewriteRounds = /qwen3:4b/i.test(model) ? 1 : 2
+  for (let round = 0; round < maxRewriteRounds; round += 1) {
     emitWriterProgress('self-critique')
     const critiqueRes = await chat(model, [
       { role: 'system', content: CRITIC_SYSTEM },

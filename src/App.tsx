@@ -23,6 +23,7 @@ import './styles.css'
 function App() {
   const route = useUiStore((s) => s.route)
   const collapsed = useUiStore((s) => s.collapsed)
+  const miniDocked = useUiStore((s) => s.miniDocked)
   const toastMsg = useUiStore((s) => s.toastMsg)
   const theme = useThemeStore((s) => s.theme)
   const { nowPlaying, playing, volume, setPlaying, setProgress } = usePlayerStore()
@@ -37,6 +38,7 @@ function App() {
 
   const shellClass = [
     'app-shell', `bg-${theme.bgStyle}`, collapsed ? 'nav-collapsed' : '',
+    miniDocked && nowPlaying ? 'player-docked' : '',
     theme.filmGrain ? 'film-grain' : '', theme.reduceMotion || !theme.animations ? 'reduce-motion' : '',
   ].filter(Boolean).join(' ')
 

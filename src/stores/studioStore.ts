@@ -471,12 +471,6 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
       useUiStore.getState().toast('Add a song idea first')
       return
     }
-    if (useAppStore.getState().engine.health !== 'ready') {
-      set({ blueprintError: 'Start the engine first - Blueprint generation needs the ACE engine to draft the song structure.' })
-      useUiStore.getState().toast('Engine offline. Start the engine first.')
-      return
-    }
-
     const language = s.vocalMode === 'instrumental' || s.language === 'auto' ? 'en' : s.language
     set({ blueprintStatus: 'generating', blueprintError: null, lyricsCraft: null, lyricsQuality: null, lyricsQualityBusy: false, writerStage: 'planning' })
     try {
@@ -488,13 +482,30 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
       const wantsLyrics = s.vocalMode === 'vocals' && s.writerModel !== 'engine'
       const writer = wantsLyrics ? await window.doReMi.getWriterAvailability() : null
       let writerFailure: string | null = writer && !writer.available ? writer.reason : null
+      const engineReady = useAppStore.getState().engine.health === 'ready'
 
-      const blueprintPromise = window.doReMi.createBlueprint({
-        query: idea,
-        instrumental: s.vocalMode === 'instrumental',
-        vocalLanguage: language,
-        tags: selectedTags(s),
-      })
+      const blueprintPromise = engineReady
+        ? window.doReMi.createBlueprint({
+            query: idea,
+            instrumental: s.vocalMode === 'instrumental',
+            vocalLanguage: language,
+            tags: selectedTags(s),
+          })
+        : Promise.resolve({
+            id: crypto.randomUUID(),
+            query: idea,
+            caption: composedPrompt(s),
+            lyrics: s.vocalMode === 'instrumental' ? '[Instrumental]' : '',
+            bpm: typeof s.bpm === 'number' ? s.bpm : null,
+            keyscale: s.musicKey,
+            duration: Math.round((s.durationMin + s.durationMax) / 2),
+            timesignature: '',
+            vocalLanguage: language,
+            instrumental: s.vocalMode === 'instrumental',
+            lmModel: null,
+            raw: { source: 'doremii-writer-only', reason: 'ACE engine was not ready' },
+            createdAt: new Date().toISOString(),
+          })
       const craftPromise = writer?.available
         ? window.doReMi.craftLyrics({
             idea,
@@ -530,7 +541,7 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
       // /format_input. The engine can't resolve caption-vs-lyrics conflicts at
       // generation time, so we harmonize them here where the user can see it.
       // We adopt the engine's caption/BPM/key/duration; the lyrics stay ours.
-      if (craft?.lyrics.trim()) {
+      if (engineReady && craft?.lyrics.trim()) {
         set({ writerStage: 'harmonizing caption + metadata with the engine' })
         const harmonized = await window.doReMi.formatInput({
           caption: merged.caption,
@@ -562,7 +573,7 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
         writerStage: null,
       })
       useUiStore.getState().toast(craft
-        ? `Blueprint ready - lyrics written by ${craft.model} with a critic pass`
+        ? `Blueprint ready - lyrics written by ${craft.model}${engineReady ? ' with engine metadata' : ' while ACE warms'}`
         : failedVocalLyrics
           ? 'Lyrics failed quality checks - blueprint blocked'
           : 'Instrumental blueprint ready to review')

@@ -10,6 +10,7 @@ export function PlayerBar() {
   const theme = useThemeStore((s) => s.theme)
   const { setDetail, setRoute, soon, miniDocked, toggleMiniDock } = useUiStore()
   const progress = duration > 0 ? Math.min(currentTime / duration, 1) : 0
+  if (nowPlaying && miniDocked) return null
 
   function handleSeek(e: React.MouseEvent<HTMLDivElement>) {
     const rect = e.currentTarget.getBoundingClientRect()
@@ -23,11 +24,7 @@ export function PlayerBar() {
   return (
     <footer className="player-bar">
       <div className="player-track">
-        {nowPlaying && miniDocked ? (
-          <button className="ghost-icon docked-hint" onClick={toggleMiniDock} title="Show the track here again">
-            <Minimize2 size={14} /> Docked to sidebar
-          </button>
-        ) : nowPlaying ? (
+        {nowPlaying ? (
           <>
             <div className={`np-cover ${theme.spinningVinyl && playing ? 'spin' : ''}`}><Cover hue={250} size="sm" /></div>
             <span className="np-meta"><strong className="ellipsis">{nowPlaying.title}</strong><small className="ellipsis">DoReMii · {nowPlaying.mode}</small></span>

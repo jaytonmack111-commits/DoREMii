@@ -61,7 +61,7 @@ export function Sidebar() {
           <Cover hue={250} size="sm" />
           {!collapsed && <span className="mini-meta"><strong>{nowPlaying.title}</strong><small>{nowPlaying.mode}</small></span>}
           <button className="mini-play" onClick={togglePlay} title={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={14} /> : <Play size={14} />}</button>
-          {!collapsed && <button className="mini-undock" onClick={toggleMiniDock} title="Move back to the player bar"><Maximize2 size={13} /></button>}
+          <button className="mini-undock" onClick={toggleMiniDock} title="Move back to the player bar"><Maximize2 size={13} /></button>
         </div>
       ) : null}
     </aside>
