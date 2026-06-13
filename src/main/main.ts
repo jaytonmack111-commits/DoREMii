@@ -6,7 +6,7 @@ import { runSetupCheck } from './setup.js'
 import { deleteSong, getDatabase, listLicenses, listPresets, listSongs, renameSong, showSongInFolder, toggleSongFavorite } from './database.js'
 import { createBlueprint, createGeneration, formatWithEngine, pollGeneration } from './generationService.js'
 import { downloadModel, getEngineSettings, listLocalModels, openModelFolder, updateEngineSettings } from './modelSettings.js'
-import { analyzeLyrics, craftLyrics, enhanceText, isWriterAvailable, listWriterModels, pullOllamaModel, rewriteLyrics, suggestTitle } from './ollamaService.js'
+import { analyzeLyrics, craftLyrics, enhanceText, generateConcept, isWriterAvailable, listWriterModels, pullOllamaModel, rewriteLyrics, suggestTitle } from './ollamaService.js'
 import { endRoom, sendToRoom, startRoom } from './writersRoomService.js'
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
@@ -96,6 +96,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('writer:craftLyrics', (_event, input) => craftLyrics(input))
   ipcMain.handle('writer:enhanceText', (_event, input) => enhanceText(input))
   ipcMain.handle('writer:suggestTitle', (_event, input) => suggestTitle(input))
+  ipcMain.handle('writer:generateConcept', (_event, input) => generateConcept(input))
 
   createWindow()
 

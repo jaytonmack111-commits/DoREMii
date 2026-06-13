@@ -143,7 +143,8 @@ function buildAcePayload(request: GenerationRequest) {
     vocal_language: normalizeLanguage(request),
     audio_duration: aceDurationFromRequest(request) || settings.audio_duration,
     batch_size: request.batchSize,
-    inference_steps: settings.inference_steps,
+    inference_steps: request.inferenceSteps ?? settings.inference_steps,
+    guidance_scale: request.guidanceScale ?? undefined,
     thinking: settings.thinking,
     seed: request.seed ?? -1,
     use_random_seed: request.seed == null,
@@ -159,10 +160,11 @@ function buildAcePayload(request: GenerationRequest) {
     // Keep the caption too: CoT caption rewriting can drift the style away
     // from the blueprint the user approved.
     use_cot_caption: !request.blueprint,
+    constrained_decoding: request.constrainedDecoding ?? true,
     // Tame the 5Hz LM's repetition spirals (its default penalty is 1.0 = off).
-    lm_repetition_penalty: 1.15,
-    lm_temperature: 0.85,
-    lm_top_p: 0.9,
+    lm_repetition_penalty: request.repetitionPenalty ?? 1.15,
+    lm_temperature: request.lmTemperature ?? 0.85,
+    lm_top_p: request.lmTopP ?? 0.9,
     // Blueprint metadata the user saw and accepted wins over LM auto-fill.
     bpm: blueprint?.bpm ?? undefined,
     key_scale: blueprint?.keyscale || undefined,

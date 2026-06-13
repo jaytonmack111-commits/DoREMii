@@ -59,7 +59,8 @@ export function StudioPage() {
     seed, negativePrompt, songTitle, pickedGenres, pickedVibes, pickedVocals, pickedInstruments,
     pickedDrums, pickedProduction, pickedEras, pickedCustomTags, pickedStructure, tagFilter,
     customTagInput, blueprint, blueprintStatus, blueprintError, lyricsCraft, lyricsQuality, lyricsQualityBusy, lyricsRewriteBusy, writerStage,
-    enhanceStyleBusy, enhanceWordsBusy, titleBusy,
+    enhanceStyleBusy, enhanceWordsBusy, titleBusy, conceptBusy,
+    thinkingPower, energy, vocalGender, tempoFeel, guidanceScale, inferenceSteps, lmTemperature, lmTopP, repetitionPenalty, constrainedDecoding,
     writerModel, writerModels, tasks, generating, set, toggleIn, setWriterModel, loadWriterModels,
     addCustomTag, applyPack, randomIdea, enhanceStyle, enhanceWords, suggestSongTitle, generateBlueprint, patchBlueprint, analyzeBlueprintLyrics, rewriteBlueprintLyrics,
     acceptBlueprint, rejectBlueprint, resetBlueprint, submitGeneration,
@@ -141,17 +142,6 @@ export function StudioPage() {
     return 'Engine starting...'
   }
 
-  function dockHint() {
-    if (editing) return `${MODE_LIBRARY.find((m) => m.id === creationMode)?.label} needs a source track - coming in a later pass.`
-    if (!engineReady) {
-      if (engineWarming) return 'Loading the local models in the background - Generate unlocks when they are ready.'
-      if (engine.state === 'error') return engine.lastError || 'Engine needs attention. Check Settings diagnostics.'
-      return 'The local engine starts automatically when DoReMii opens.'
-    }
-    if (vocalMode === 'vocals' && !hasLyricsForVocals) return 'Vocal songs need lyrics: write your own in the Idea tab, or accept a blueprint in the Blueprint tab.'
-    return `${vocalMode === 'vocals' ? 'Vocal song' : 'Instrumental'} · ${durationMode === 'auto' ? 'auto length' : `${formatSeconds(durationMin)}-${formatSeconds(durationMax)}`} · ${variations} variation${variations > 1 ? 's' : ''}`
-  }
-
   return (
     <section className="page studio studio-tabbed">
       <div className="studio-head">
@@ -160,7 +150,7 @@ export function StudioPage() {
           <h1>Build a track from the idea outward.</h1>
         </div>
         <div className="studio-head-actions">
-          <button className="mini-action" onClick={randomIdea}><Dices size={15} /> Random Idea</button>
+          <button className="mini-action" onClick={() => void randomIdea()} disabled={conceptBusy}><Dices size={15} /> {conceptBusy ? 'Thinking...' : 'Random Idea'}</button>
           <div className="segmented small">
             {TIERS.map((t) => (
               <button key={t.id} className={tier === t.id ? 'seg active' : 'seg'} onClick={() => set({ tier: t.id })}>{t.label}</button>
@@ -249,8 +239,8 @@ export function StudioPage() {
                 </div>
 
                 {/* Right: Sound & Style */}
-                <div className="idea-box">
-                  <span className="chip-label">Sound &amp; Style</span>
+                <div className="idea-box style-box">
+                  <span className="chip-label style-label">Sound &amp; Style</span>
                   <textarea
                     className="idea-area"
                     value={styleText}
@@ -531,6 +521,32 @@ export function StudioPage() {
                 </div>
               </label>
 
+              <label className="stacked">Energy
+                <div className="segmented small">
+                  {(['chill', 'balanced', 'hype'] as const).map((e) => (
+                    <button key={e} className={energy === e ? 'seg active' : 'seg'} onClick={() => set({ energy: e })}>{e[0].toUpperCase() + e.slice(1)}</button>
+                  ))}
+                </div>
+              </label>
+
+              <label className="stacked">Tempo Feel
+                <div className="segmented small">
+                  {(['auto', 'slow', 'medium', 'fast'] as const).map((t) => (
+                    <button key={t} className={tempoFeel === t ? 'seg active' : 'seg'} onClick={() => set({ tempoFeel: t })}>{t[0].toUpperCase() + t.slice(1)}</button>
+                  ))}
+                </div>
+              </label>
+
+              {vocalMode === 'vocals' && (
+                <label className="stacked">Vocal Character
+                  <div className="segmented small">
+                    {(['any', 'male', 'female'] as const).map((g) => (
+                      <button key={g} className={vocalGender === g ? 'seg active' : 'seg'} onClick={() => set({ vocalGender: g })}>{g[0].toUpperCase() + g.slice(1)}</button>
+                    ))}
+                  </div>
+                </label>
+              )}
+
               {showAdvanced && vocalMode === 'vocals' && (
                 <label className="stacked">Language
                   <select value={language} onChange={(e) => set({ language: e.target.value })}>
@@ -609,6 +625,30 @@ export function StudioPage() {
                 </div>
               )}
 
+              {showAdvanced && (
+                <div className="stacked-block span-2">
+                  <span className="chip-label">Engine Controls</span>
+                  <div className="field-grid">
+                    <label>BPM<input type="number" value={bpm} onChange={(e) => set({ bpm: e.target.value ? Number(e.target.value) : '' })} placeholder="Auto" /></label>
+                    <label>Key<input value={musicKey} onChange={(e) => set({ musicKey: e.target.value })} placeholder="Auto" /></label>
+                    <label>Inference Steps
+                      <select value={inferenceSteps} onChange={(e) => set({ inferenceSteps: Number(e.target.value) })}>
+                        <option value={0}>Auto (preset)</option>
+                        <option value={8}>8 — fast</option>
+                        <option value={12}>12</option>
+                        <option value={20}>20</option>
+                        <option value={28}>28 — max quality</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="slider-row">
+                    <div className="slider-top"><span>Guidance Scale</span><span className="slider-value">{guidanceScale.toFixed(1)}</span></div>
+                    <input type="range" min={1} max={15} step={0.5} value={guidanceScale} onChange={(e) => set({ guidanceScale: Number(e.target.value) })} />
+                    <span className="hint">Higher follows your prompt harder; lower is looser and more creative.</span>
+                  </div>
+                </div>
+              )}
+
               {showPro && (
                 <div className="stacked-block span-2">
                   <span className="chip-label">Mode Library</span>
@@ -627,10 +667,30 @@ export function StudioPage() {
                     Negative Prompt - sounds to avoid
                     <textarea className="grow-area short" value={negativePrompt} onChange={(e) => set({ negativePrompt: e.target.value })} />
                   </label>
+                  <label className="stacked">Seed
+                    <input type="number" value={seed ?? ''} onChange={(e) => set({ seed: e.target.value ? Number(e.target.value) : null })} placeholder="Random" />
+                  </label>
+                </div>
+              )}
+
+              {showPro && (
+                <div className="stacked-block span-2">
+                  <span className="chip-label">AI Lab</span>
+                  <div className="slider-row">
+                    <div className="slider-top"><span>Thinking Power — writer &amp; Random Idea</span><span className="slider-value">{thinkingPower}/5</span></div>
+                    <input type="range" min={1} max={5} step={1} value={thinkingPower} onChange={(e) => set({ thinkingPower: Number(e.target.value) })} />
+                    <span className="hint">{thinkingPower >= 3 ? 'Models reason before answering — slower, noticeably better ideas and lyrics.' : 'Fast, direct answers.'}</span>
+                  </div>
                   <div className="field-grid">
-                    <label>BPM<input type="number" value={bpm} onChange={(e) => set({ bpm: e.target.value ? Number(e.target.value) : '' })} placeholder="Auto" /></label>
-                    <label>Key<input value={musicKey} onChange={(e) => set({ musicKey: e.target.value })} placeholder="Auto" /></label>
-                    <label>Seed<input type="number" value={seed ?? ''} onChange={(e) => set({ seed: e.target.value ? Number(e.target.value) : null })} placeholder="Random" /></label>
+                    <div className="slider-row"><div className="slider-top"><span>LM Temperature</span><span className="slider-value">{lmTemperature.toFixed(2)}</span></div><input type="range" min={0.1} max={1.5} step={0.05} value={lmTemperature} onChange={(e) => set({ lmTemperature: Number(e.target.value) })} /></div>
+                    <div className="slider-row"><div className="slider-top"><span>LM Top-P</span><span className="slider-value">{lmTopP.toFixed(2)}</span></div><input type="range" min={0.1} max={1} step={0.05} value={lmTopP} onChange={(e) => set({ lmTopP: Number(e.target.value) })} /></div>
+                    <div className="slider-row"><div className="slider-top"><span>Repetition Penalty</span><span className="slider-value">{repetitionPenalty.toFixed(2)}</span></div><input type="range" min={1} max={1.5} step={0.01} value={repetitionPenalty} onChange={(e) => set({ repetitionPenalty: Number(e.target.value) })} /></div>
+                    <label className="stacked">Constrained Decoding
+                      <div className="segmented small">
+                        <button className={constrainedDecoding ? 'seg active' : 'seg'} onClick={() => set({ constrainedDecoding: true })}>On</button>
+                        <button className={!constrainedDecoding ? 'seg active' : 'seg'} onClick={() => set({ constrainedDecoding: false })}>Off</button>
+                      </div>
+                    </label>
                   </div>
                 </div>
               )}
@@ -639,13 +699,31 @@ export function StudioPage() {
         )}
       </div>
 
-      {/* ---------- Generate dock ---------- */}
-      <div className="generate-dock">
-        <span className="dock-hint">{dockHint()}</span>
-        <button className="generate-cta dock-cta" onClick={() => void submitGeneration()} disabled={!canGenerate}>
-          <AudioLines size={20} />
-          {generateLabel()}
-        </button>
+      {/* ---------- Contextual action bar (compact, per-tab) ---------- */}
+      <div className="studio-actionbar">
+        {visibleTab === 'idea' && vocalMode === 'vocals' ? (
+          <>
+            <label className="writer-inline">
+              <span>Writer</span>
+              <select value={writerModel} onChange={(e) => setWriterModel(e.target.value)}>
+                <option value="auto">Auto</option>
+                {writerModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                <option value="engine">ACE LM</option>
+              </select>
+            </label>
+            <button
+              className="generate-cta compact"
+              onClick={() => { setActiveTab('blueprint'); void generateBlueprint() }}
+              disabled={!engineReady || blueprintStatus === 'generating'}
+            >
+              <Wand2 size={18} /> {blueprintStatus === 'generating' ? 'Generating...' : 'Generate Blueprint'}
+            </button>
+          </>
+        ) : (
+          <button className="generate-cta compact" onClick={() => void submitGeneration()} disabled={!canGenerate}>
+            <AudioLines size={18} /> {generateLabel()}
+          </button>
+        )}
       </div>
 
       {/* ---------- Your Creations (compact strip) ---------- */}

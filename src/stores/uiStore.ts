@@ -11,7 +11,11 @@ interface UiState {
   showLogs: boolean
   detail: SongVersion | null
   toastMsg: string | null
+  /** When true, the now-playing card lives in the sidebar instead of the
+   *  bottom player bar - the user toggles which one shows it. */
+  miniDocked: boolean
   setRoute: (route: RouteId) => void
+  toggleMiniDock: () => void
   toggleCollapsed: () => void
   setShowThemes: (open: boolean) => void
   setShowSetup: (open: boolean) => void
@@ -31,7 +35,9 @@ export const useUiStore = create<UiState>((set) => ({
   showLogs: false,
   detail: null,
   toastMsg: null,
+  miniDocked: false,
   setRoute: (route) => set({ route }),
+  toggleMiniDock: () => set((s) => ({ miniDocked: !s.miniDocked })),
   toggleCollapsed: () => set((s) => ({ collapsed: !s.collapsed })),
   setShowThemes: (showThemes) => set({ showThemes }),
   setShowSetup: (showSetup) => set({ showSetup }),

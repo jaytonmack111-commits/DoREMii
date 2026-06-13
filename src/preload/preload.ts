@@ -63,6 +63,7 @@ const api: DoReMiApi = {
   craftLyrics: (input) => ipcRenderer.invoke('writer:craftLyrics', input),
   enhanceText: (input) => ipcRenderer.invoke('writer:enhanceText', input),
   suggestTitle: (input) => ipcRenderer.invoke('writer:suggestTitle', input),
+  generateConcept: (input) => ipcRenderer.invoke('writer:generateConcept', input),
 }
 
 contextBridge.exposeInMainWorld('doReMi', api)

@@ -56,6 +56,20 @@ interface StudioStore {
   /** 'auto' = strongest installed Ollama model; 'engine' = ACE's small LM only. */
   writerModel: string
   writerModels: string[]
+  /** 1 (quick) .. 5 (deep) - controls whether the writer AIs think before answering. */
+  thinkingPower: number
+  // Simple-tier shaping (feeds the prompt, no engine params needed)
+  energy: 'chill' | 'balanced' | 'hype'
+  vocalGender: 'any' | 'male' | 'female'
+  tempoFeel: 'slow' | 'medium' | 'fast' | 'auto'
+  // Advanced/Pro engine overrides
+  guidanceScale: number
+  inferenceSteps: number
+  lmTemperature: number
+  lmTopP: number
+  repetitionPenalty: number
+  constrainedDecoding: boolean
+  conceptBusy: boolean
   tasks: GenerationTask[]
   generating: boolean
 
@@ -66,7 +80,7 @@ interface StudioStore {
   addCustomTag: () => void
   applyPack: (pack: { genres: string[]; vibes: string[] }) => void
   applyTemplate: (t: { idea: string; genres: string[]; vibes: string[] }) => void
-  randomIdea: () => void
+  randomIdea: () => Promise<void>
   enhanceStyle: () => Promise<void>
   enhanceWords: () => Promise<void>
   suggestSongTitle: () => Promise<void>
@@ -95,18 +109,29 @@ function clearBlueprintState(): Partial<StudioStore> {
   }
 }
 
+const ENERGY_HINT: Record<StudioStore['energy'], string> = { chill: 'relaxed, laid-back energy', balanced: '', hype: 'high-energy, intense and driving' }
+const TEMPO_HINT: Record<StudioStore['tempoFeel'], string> = { slow: 'slow tempo', medium: 'mid tempo', fast: 'fast, up-tempo', auto: '' }
+
+function vocalHint(s: StudioStore) {
+  if (s.vocalMode !== 'vocals') return 'instrumental, no vocals'
+  const gender = s.vocalGender === 'male' ? 'male lead vocal' : s.vocalGender === 'female' ? 'female lead vocal' : ''
+  return [gender, s.pickedVocals.join(', ')].filter(Boolean).join(', ')
+}
+
 function composedPrompt(s: StudioStore) {
   const parts = [
     s.styleText.trim(),
     s.songIdea.trim(),
     s.pickedGenres.join(', '),
     s.pickedVibes.join(', '),
+    ENERGY_HINT[s.energy],
+    TEMPO_HINT[s.tempoFeel],
     s.pickedInstruments.join(', '),
     s.pickedDrums.join(', '),
     s.pickedProduction.join(', '),
     s.pickedEras.join(', '),
     s.pickedCustomTags.join(', '),
-    s.vocalMode === 'vocals' ? s.pickedVocals.join(', ') : 'instrumental, no vocals',
+    vocalHint(s),
     s.bpm ? `${s.bpm} BPM` : '',
     s.musicKey ? `key of ${s.musicKey}` : '',
   ].filter(Boolean)
@@ -235,11 +260,25 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
   writerStage: null,
   writerModel: localStorage.getItem('doremi.writer.model') || 'auto',
   writerModels: [],
+  thinkingPower: Number(localStorage.getItem('doremi.thinking.power')) || 2,
+  energy: 'balanced',
+  vocalGender: 'any',
+  tempoFeel: 'auto',
+  guidanceScale: 7,
+  inferenceSteps: 0,
+  lmTemperature: 0.85,
+  lmTopP: 0.9,
+  repetitionPenalty: 1.15,
+  constrainedDecoding: true,
+  conceptBusy: false,
   tasks: [],
   generating: false,
 
   set: (patch) => set((s) => {
     const next: Partial<StudioStore> = { ...patch }
+    if (typeof patch.thinkingPower === 'number') {
+      try { localStorage.setItem('doremi.thinking.power', String(patch.thinkingPower)) } catch { /* ignore */ }
+    }
     const vocalModeChanged = Boolean(patch.vocalMode && patch.vocalMode !== s.vocalMode)
     const blueprintInputsChanged = 'songIdea' in patch || 'styleText' in patch || 'language' in patch || 'pickedStructure' in patch
 
@@ -280,15 +319,34 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
     useUiStore.getState().setRoute('studio')
     useUiStore.getState().toast('Template loaded')
   },
-  randomIdea: () => {
-    const g = GENRES[Math.floor(Math.random() * GENRES.length)]
-    const v = VIBES[Math.floor(Math.random() * VIBES.length)]
-    set({
-      pickedGenres: [g], pickedVibes: [v],
-      styleText: `A ${v.toLowerCase()} ${g} track with rich texture`,
-      songIdea: `A ${v.toLowerCase()} ${g} song with a strong, memorable hook`,
-    })
-    useUiStore.getState().toast('Rolled a fresh idea')
+  randomIdea: async () => {
+    const s = get()
+    set({ conceptBusy: true })
+    useUiStore.getState().toast(s.thinkingPower >= 3 ? 'Dreaming up a concept (deep thinking)…' : 'Dreaming up a fresh concept…')
+    try {
+      const concept = await window.doReMi.generateConcept({
+        think: s.thinkingPower >= 3,
+        model: s.writerModel === 'auto' || s.writerModel === 'engine' ? undefined : s.writerModel,
+      })
+      set({
+        songIdea: concept.idea,
+        styleText: concept.style,
+        songTitle: concept.title || s.songTitle,
+        lyricsTab: s.vocalMode === 'instrumental' ? 'instrumental' : 'prompt',
+      })
+      useUiStore.getState().toast('Fresh concept ready')
+    } catch {
+      // generateConcept has its own fallback, so this is only reached on a true
+      // IPC failure - seed a distinct idea/style locally.
+      const g = GENRES[Math.floor(Math.random() * GENRES.length)]
+      const v = VIBES[Math.floor(Math.random() * VIBES.length)]
+      set({
+        songIdea: `A ${v.toLowerCase()} song about a single vivid moment - find where it turns and build toward it.`,
+        styleText: `${g} with a clear lead vocal, one signature instrument, and a mix that opens up on the chorus.`,
+      })
+    } finally {
+      set({ conceptBusy: false })
+    }
   },
   // Enhance buttons are Ollama-only text improvers: they NEVER touch the ACE
   // engine and NEVER trigger a blueprint. Blueprint generation happens in
@@ -306,6 +364,7 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
         text: s.styleText,
         tags: selectedTags(s),
         model: s.writerModel === 'auto' || s.writerModel === 'engine' ? undefined : s.writerModel,
+        think: s.thinkingPower >= 3,
       })
       set({ styleText: improved })
       useUiStore.getState().toast('Style description enhanced')
@@ -330,6 +389,7 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
         text,
         tags: selectedTags(s),
         model: s.writerModel === 'auto' || s.writerModel === 'engine' ? undefined : s.writerModel,
+        think: s.thinkingPower >= 3,
       })
       set(isWrite ? { lyrics: improved } : { songIdea: improved })
       useUiStore.getState().toast(isWrite ? 'Lyrics polished' : 'Idea sharpened')
@@ -619,6 +679,12 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
         performancePreset: s.performance,
         sourceAudioPath: null,
         blueprint: s.blueprintStatus === 'accepted' ? s.blueprint : null,
+        guidanceScale: s.guidanceScale,
+        inferenceSteps: s.inferenceSteps || undefined,
+        lmTemperature: s.lmTemperature,
+        lmTopP: s.lmTopP,
+        repetitionPenalty: s.repetitionPenalty,
+        constrainedDecoding: s.constrainedDecoding,
       })
       set((c) => ({ tasks: [task, ...c.tasks] }))
       if (task.status === 'error') {

@@ -653,17 +653,66 @@ export async function isWriterAvailable(): Promise<{ available: boolean; model: 
   }
 }
 
-const ENHANCE_PROMPTS: Record<'style' | 'idea' | 'lyrics', string> = {
-  style: `You polish sound-and-style descriptions for an AI music generator.
-Rewrite the user's text into ONE vivid production description: genre, energy, vocal character, key instruments, drum feel, production texture, era. Keep every intention the user expressed. 2-4 sentences, no lyrics, no section tags, no preamble.`,
-  idea: `You sharpen song concepts.
-Rewrite the user's idea into a tighter concept: clear subject, emotional angle, and ONE core image or metaphor the song can hang on. Keep their topic and language exactly. 1-3 sentences, no lyrics, no preamble.`,
-  lyrics: `You are a lyric editor. Improve the user's lyrics IN PLACE: keep their structure tags, story, and most of their words. Fix weak lines, rhythm, and rhyme; tighten syllables for singability (6-10 per line). Output ONLY the improved lyrics, nothing else.`,
+/** Clean single-shot completion that AVOIDS the FINAL_MARKER hack entirely.
+ *  The marker hack (used by the lyric pipeline to suppress qwen3 thinking)
+ *  confused the model into reasoning ABOUT the marker and leaking that
+ *  reasoning as output. Here we either let qwen3 think natively (think=true,
+ *  reasoning routed to message.thinking) or suppress thinking cleanly with
+ *  /no_think - both give a clean answer in message.content. */
+export async function ollamaComplete(
+  model: string,
+  system: string,
+  user: string,
+  opts?: { think?: boolean; temperature?: number },
+): Promise<string> {
+  const think = opts?.think ?? false
+  const temperature = opts?.temperature ?? 0.8
+  const isQwen = /^qwen3:/i.test(model)
+  const userContent = !think && isQwen ? `${user}\n\n/no_think` : user
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 180_000)
+  try {
+    const response = await fetch(`${OLLAMA_URL}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        stream: false,
+        think,
+        keep_alive: '10m',
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: userContent },
+        ],
+        options: { temperature, num_ctx: think ? THINK_CTX : CHAT_CTX, num_predict: MAX_OUTPUT_TOKENS },
+      }),
+    })
+    if (!response.ok) throw new Error(`Ollama HTTP ${response.status}`)
+    const body = await response.json() as { message?: { content?: string; thinking?: string }; error?: string }
+    if (body.error) throw new Error(body.error)
+    let text = (body.message?.content ?? '').replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+    // If everything ended up in the thinking channel, recover the tail of it.
+    if (!text && body.message?.thinking) {
+      const lines = body.message.thinking.trim().split(/\n+/).filter(Boolean)
+      text = lines.slice(-4).join('\n')
+    }
+    return text.trim()
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
-/** Quick single-shot text improver for the Studio's Enhance buttons.
- *  Ollama-only: never touches the ACE engine, so it works while ACE warms. */
-export async function enhanceText(input: { kind: 'style' | 'idea' | 'lyrics'; text: string; tags?: string[]; model?: string }): Promise<string> {
+const ENHANCE_PROMPTS: Record<'style' | 'idea' | 'lyrics', string> = {
+  style: `You polish sound-and-style descriptions for an AI music generator. Rewrite the user's text into ONE vivid production description: genre, energy, vocal character, key instruments, drum feel, production texture, era. Keep every intention the user expressed. 2-4 sentences, no lyrics, no section tags. Reply with ONLY the rewritten description - no preamble, no quotes, no explanation.`,
+  idea: `You sharpen song concepts. Rewrite the user's idea into a tighter concept: clear subject, emotional angle, and ONE core image or metaphor the song can hang on. Keep their topic and language exactly. 1-3 sentences. Reply with ONLY the rewritten concept - no preamble, no quotes, no explanation.`,
+  lyrics: `You are a lyric editor. Improve the user's lyrics IN PLACE: keep their structure tags, story, and most of their words. Fix weak lines, rhythm, and rhyme; tighten syllables for singability (6-10 per line). Reply with ONLY the improved lyrics, nothing else.`,
+}
+
+/** Single-shot text improver for the Studio's Enhance buttons. Ollama-only,
+ *  so it works even while ACE is still warming. */
+export async function enhanceText(input: { kind: 'style' | 'idea' | 'lyrics'; text: string; tags?: string[]; model?: string; think?: boolean }): Promise<string> {
   const text = input.text.trim()
   if (!text) throw new Error('Write something first, then Enhance can improve it.')
   const model = await pickWriterModel(input.model)
@@ -672,12 +721,12 @@ export async function enhanceText(input: { kind: 'style' | 'idea' | 'lyrics'; te
     throw new Error(`Enhance needs the local writer (Ollama): ${why}`)
   }
   const tagLine = input.tags?.length ? `\n\nSelected style tags to respect: ${input.tags.join(', ')}` : ''
-  const { text: improved } = await chatRaw(model, [
-    { role: 'system', content: ENHANCE_PROMPTS[input.kind] },
-    { role: 'user', content: `${text}${tagLine}` },
-  ], 0.7, false, `enhance-${input.kind}`)
-  const cleaned = improved.trim().replace(/^["'“]|["'”]$/g, '')
-  if (!cleaned) throw new Error('The writer returned nothing - try again.')
+  const improved = await ollamaComplete(model, ENHANCE_PROMPTS[input.kind], `${text}${tagLine}`, {
+    think: input.think ?? false,
+    temperature: 0.7,
+  })
+  const cleaned = improved.replace(/^["'“]+|["'”]+$/g, '').trim()
+  if (!cleaned) throw new Error('The writer returned nothing - try again or raise thinking power.')
   return cleaned
 }
 
@@ -699,15 +748,59 @@ export async function suggestTitle(input: { lyrics: string; idea?: string; model
   const model = await pickWriterModel(input.model)
   if (!model) return fallbackTitle(input.lyrics, input.idea)
   try {
-    const { text } = await chatRaw(model, [
-      { role: 'system', content: 'You name songs. Read the lyrics and reply with ONE evocative title, 1-5 words, Title Case. No quotes, no punctuation at the end, no explanation - just the title.' },
-      { role: 'user', content: `${input.idea ? `Song concept: ${input.idea}\n\n` : ''}Lyrics:\n${input.lyrics.slice(0, 2400)}` },
-    ], 0.8, false, 'suggest-title')
-    const title = text.trim().split(/\r?\n/)[0].replace(/^["'“]|["'”]$/g, '').replace(/[.!?]+$/, '').trim()
+    const text = await ollamaComplete(
+      model,
+      'You name songs. Read the lyrics and reply with ONE evocative title, 1-5 words, Title Case. No quotes, no punctuation at the end, no explanation - just the title.',
+      `${input.idea ? `Song concept: ${input.idea}\n\n` : ''}Lyrics:\n${input.lyrics.slice(0, 2400)}`,
+      { think: false, temperature: 0.8 },
+    )
+    const title = text.split(/\r?\n/)[0].replace(/^["'“]+|["'”]+$/g, '').replace(/[.!?]+$/, '').trim()
     if (title && title.length <= 60 && !/^(title|song)\b[:\s]/i.test(title)) return title
     return fallbackTitle(input.lyrics, input.idea)
   } catch {
     return fallbackTitle(input.lyrics, input.idea)
+  }
+}
+
+const RANDOM_GENRES = ['dream pop', 'drill', 'neo-soul', 'post-rock', 'synthwave', 'bluegrass', 'shoegaze', 'afrobeats', 'industrial techno', 'bedroom pop', 'cinematic orchestral', 'lo-fi hip-hop', 'flamenco', 'gospel house', 'darkwave', 'jazz fusion']
+const RANDOM_THEMES = ['a lighthouse keeper losing track of time', 'the last train out of a dying town', 'two rivals who can only speak through music', 'a city that forgets its own name', 'falling for someone in a recurring dream', 'a machine learning what longing feels like', 'the morning after everything changed', 'dancing through grief at a stranger\'s wedding']
+
+/** AI-backed Random Idea: returns a DISTINCT concept and production style
+ *  (one is about meaning, the other about sound) instead of two near-identical
+ *  one-liners. Falls back to seeded randoms if the writer is unavailable. */
+export async function generateConcept(input?: { think?: boolean; model?: string }): Promise<{ title: string; idea: string; style: string }> {
+  const model = await pickWriterModel(input?.model)
+  const fallback = () => {
+    const g = RANDOM_GENRES[Math.floor(Math.random() * RANDOM_GENRES.length)]
+    const t = RANDOM_THEMES[Math.floor(Math.random() * RANDOM_THEMES.length)]
+    return {
+      title: '',
+      idea: `A song about ${t}. Find the one moment it turns, and build the whole story toward it.`,
+      style: `${g} with a clear lead vocal, a distinctive hook instrument, and a mix that leaves space - intro builds, choruses open up, outro resolves.`,
+    }
+  }
+  if (!model) return fallback()
+  try {
+    const seedGenre = RANDOM_GENRES[Math.floor(Math.random() * RANDOM_GENRES.length)]
+    const seedTheme = RANDOM_THEMES[Math.floor(Math.random() * RANDOM_THEMES.length)]
+    const raw = await ollamaComplete(
+      model,
+      `You are a music concept generator. Invent ONE original, evocative song concept. Reply as STRICT JSON on a single line and nothing else:
+{"title":"a short evocative title","idea":"1-2 sentences about MEANING: the subject, the emotional angle, the story, the one core image","style":"1-2 sentences about SOUND only: genre, key instruments, tempo feel, vocal character, era, production texture"}
+The "idea" and "style" must be clearly DIFFERENT - one is what the song is about, the other is how it sounds. Be specific and surprising, never generic.`,
+      `Use this as loose inspiration (reinterpret freely, don't copy): theme "${seedTheme}", a flavour of ${seedGenre}. Generate the concept now.`,
+      { think: input?.think ?? false, temperature: 1.05 },
+    )
+    const match = raw.match(/\{[\s\S]*\}/)
+    if (match) {
+      const parsed = JSON.parse(match[0]) as { title?: string; idea?: string; style?: string }
+      const idea = (parsed.idea || '').trim()
+      const style = (parsed.style || '').trim()
+      if (idea && style) return { title: (parsed.title || '').trim(), idea, style }
+    }
+    return fallback()
+  } catch {
+    return fallback()
   }
 }
 

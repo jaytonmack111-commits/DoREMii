@@ -1,4 +1,4 @@
-import { AudioLines, Compass, FlaskConical, Heart, Library, Music2, Pause, Play, Plus, Search, Sparkles } from 'lucide-react'
+import { AudioLines, Compass, FlaskConical, Heart, Library, Maximize2, Music2, Pause, Play, Plus, Search, Sparkles } from 'lucide-react'
 import { Cover } from '../ui/Cover'
 import { togglePlay } from '../../lib/audioController'
 import { usePlayerStore } from '../../stores/playerStore'
@@ -14,7 +14,7 @@ const navItems: { id: RouteId; label: string; icon: typeof Sparkles }[] = [
 ]
 
 export function Sidebar() {
-  const { route, collapsed, setRoute, toggleCollapsed, toast, soon } = useUiStore()
+  const { route, collapsed, miniDocked, setRoute, toggleCollapsed, toggleMiniDock, toast, soon } = useUiStore()
   const { nowPlaying, playing } = usePlayerStore()
 
   return (
@@ -48,21 +48,22 @@ export function Sidebar() {
         <div className="playlists">
           <div className="playlists-head">
             <span>Playlists</span>
-            <button aria-label="New playlist" onClick={() => soon('Playlists')}><Plus size={14} /></button>
+            <button className="head-add" aria-label="New playlist" title="New playlist" onClick={() => soon('Playlists')}><Plus size={14} /></button>
           </div>
           <p className="playlists-empty">No playlists yet. Create one to organise your tracks.</p>
         </div>
       )}
 
-      <div className="mini-player">
-        {nowPlaying ? (
-          <>
-            <Cover hue={250} size="sm" />
-            {!collapsed && <span className="mini-meta"><strong>{nowPlaying.title}</strong><small>{nowPlaying.mode}</small></span>}
-            <button className="mini-play" onClick={togglePlay}>{playing ? <Pause size={14} /> : <Play size={14} />}</button>
-          </>
-        ) : (!collapsed && <span className="mini-empty">Nothing playing yet</span>)}
-      </div>
+      {/* The now-playing card only lives here when the user docks it from the
+          bottom player; otherwise the sidebar stays clean. */}
+      {miniDocked && nowPlaying ? (
+        <div className="mini-player docked">
+          <Cover hue={250} size="sm" />
+          {!collapsed && <span className="mini-meta"><strong>{nowPlaying.title}</strong><small>{nowPlaying.mode}</small></span>}
+          <button className="mini-play" onClick={togglePlay} title={playing ? 'Pause' : 'Play'}>{playing ? <Pause size={14} /> : <Play size={14} />}</button>
+          {!collapsed && <button className="mini-undock" onClick={toggleMiniDock} title="Move back to the player bar"><Maximize2 size={13} /></button>}
+        </div>
+      ) : null}
     </aside>
   )
 }

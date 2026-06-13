@@ -1,4 +1,4 @@
-import { Info, ListMusic, Pause, Play, Repeat, Settings, Shuffle, SkipBack, SkipForward, Volume2 } from 'lucide-react'
+import { Info, ListMusic, Minimize2, Pause, Play, Repeat, Settings, Shuffle, SkipBack, SkipForward, Volume2 } from 'lucide-react'
 import { Cover } from '../ui/Cover'
 import { formatTime, seekToFraction, setVolume, togglePlay } from '../../lib/audioController'
 import { usePlayerStore } from '../../stores/playerStore'
@@ -8,7 +8,7 @@ import { useUiStore } from '../../stores/uiStore'
 export function PlayerBar() {
   const { nowPlaying, playing, currentTime, duration, volume } = usePlayerStore()
   const theme = useThemeStore((s) => s.theme)
-  const { setDetail, setRoute, soon } = useUiStore()
+  const { setDetail, setRoute, soon, miniDocked, toggleMiniDock } = useUiStore()
   const progress = duration > 0 ? Math.min(currentTime / duration, 1) : 0
 
   function handleSeek(e: React.MouseEvent<HTMLDivElement>) {
@@ -23,11 +23,16 @@ export function PlayerBar() {
   return (
     <footer className="player-bar">
       <div className="player-track">
-        {nowPlaying ? (
+        {nowPlaying && miniDocked ? (
+          <button className="ghost-icon docked-hint" onClick={toggleMiniDock} title="Show the track here again">
+            <Minimize2 size={14} /> Docked to sidebar
+          </button>
+        ) : nowPlaying ? (
           <>
             <div className={`np-cover ${theme.spinningVinyl && playing ? 'spin' : ''}`}><Cover hue={250} size="sm" /></div>
             <span className="np-meta"><strong className="ellipsis">{nowPlaying.title}</strong><small className="ellipsis">DoReMii · {nowPlaying.mode}</small></span>
-            <button className="ghost-icon" onClick={() => setDetail(nowPlaying)}><Info size={15} /></button>
+            <button className="ghost-icon" onClick={() => setDetail(nowPlaying)} title="Track details"><Info size={15} /></button>
+            <button className="ghost-icon" onClick={toggleMiniDock} title="Dock to sidebar"><Minimize2 size={15} /></button>
           </>
         ) : (<span className="np-empty">Select a track to play</span>)}
       </div>

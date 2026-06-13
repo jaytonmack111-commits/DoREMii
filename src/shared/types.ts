@@ -231,6 +231,14 @@ export interface GenerationRequest {
   performancePreset: PerformancePreset
   sourceAudioPath: string | null
   blueprint: BlueprintResult | null
+  // Optional advanced/pro overrides; undefined means "use the preset default".
+  guidanceScale?: number
+  inferenceSteps?: number
+  lmTemperature?: number
+  lmTopP?: number
+  repetitionPenalty?: number
+  constrainedDecoding?: boolean
+  styleHints?: string
 }
 
 export interface GenerationTask {
@@ -332,8 +340,9 @@ export interface DoReMiApi {
     intent?: SongIntent
   }) => Promise<LyricsCraftResult>
   analyzeLyrics: (input: { lyrics: string; idea?: string; model?: string; intent?: SongIntent }) => Promise<LyricsQualityReport>
-  enhanceText: (input: { kind: 'style' | 'idea' | 'lyrics'; text: string; tags?: string[]; model?: string }) => Promise<string>
+  enhanceText: (input: { kind: 'style' | 'idea' | 'lyrics'; text: string; tags?: string[]; model?: string; think?: boolean }) => Promise<string>
   suggestTitle: (input: { lyrics: string; idea?: string; model?: string }) => Promise<string>
+  generateConcept: (input?: { think?: boolean; model?: string }) => Promise<{ title: string; idea: string; style: string }>
   rewriteLyrics: (input: { lyrics: string; idea?: string; instruction: string; model?: string; intent?: SongIntent }) => Promise<LyricsCraftResult>
   startWritersRoom: (input: { idea: string; tags: string[]; lyrics: string; caption: string; model?: string; intent?: SongIntent }) => Promise<RoomState>
   sendToWritersRoom: (text: string) => Promise<RoomState>
