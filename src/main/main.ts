@@ -6,7 +6,7 @@ import { runSetupCheck } from './setup.js'
 import { deleteSong, getDatabase, listLicenses, listPresets, listSongs, renameSong, showSongInFolder, toggleSongFavorite } from './database.js'
 import { createBlueprint, createGeneration, formatWithEngine, pollGeneration } from './generationService.js'
 import { downloadModel, getEngineSettings, listLocalModels, openModelFolder, updateEngineSettings } from './modelSettings.js'
-import { analyzeLyrics, craftLyrics, isWriterAvailable, listWriterModels, pullOllamaModel, rewriteLyrics } from './ollamaService.js'
+import { analyzeLyrics, craftLyrics, enhanceText, isWriterAvailable, listWriterModels, pullOllamaModel, rewriteLyrics, suggestTitle } from './ollamaService.js'
 import { endRoom, sendToRoom, startRoom } from './writersRoomService.js'
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
@@ -63,6 +63,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('engine:status', () => engineManager.refreshHealth())
   ipcMain.handle('engine:start', () => engineManager.start())
   ipcMain.handle('engine:stop', () => engineManager.stop())
+  ipcMain.handle('engine:restart', () => engineManager.forceRestart())
   ipcMain.handle('engine:logs', () => engineManager.getLogs())
   ipcMain.handle('engine:settings:get', () => getEngineSettings())
   ipcMain.handle('engine:settings:update', (_event, patch) => updateEngineSettings(patch))
@@ -93,6 +94,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('room:send', (event, text) => sendToRoom(event.sender, text))
   ipcMain.handle('room:end', () => endRoom())
   ipcMain.handle('writer:craftLyrics', (_event, input) => craftLyrics(input))
+  ipcMain.handle('writer:enhanceText', (_event, input) => enhanceText(input))
+  ipcMain.handle('writer:suggestTitle', (_event, input) => suggestTitle(input))
 
   createWindow()
 

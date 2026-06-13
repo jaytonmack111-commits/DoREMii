@@ -31,6 +31,7 @@ interface AppStore {
   showInFolder: (id: string) => Promise<void>
   startEngine: () => Promise<void>
   stopEngine: () => Promise<void>
+  restartEngine: () => Promise<void>
 }
 
 export const useAppStore = create<AppStore>((set) => ({
@@ -83,6 +84,17 @@ export const useAppStore = create<AppStore>((set) => ({
     set({ busy: true })
     try {
       set({ engine: await window.doReMi.stopEngine(), logs: await window.doReMi.getEngineLogs() })
+    } finally {
+      set({ busy: false })
+    }
+  },
+  restartEngine: async () => {
+    set({ busy: true })
+    useUiStore.getState().toast('Restarting the engine - killing any stuck process and booting fresh...')
+    try {
+      const status = await window.doReMi.restartEngine()
+      set({ engine: status, logs: await window.doReMi.getEngineLogs() })
+      if (status.state === 'error') useUiStore.getState().toast(status.lastError || 'Engine restart failed - see logs')
     } finally {
       set({ busy: false })
     }

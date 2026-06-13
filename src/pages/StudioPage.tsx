@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { AudioLines, Check, ChevronDown, ChevronRight, Dices, Info, ListChecks, Music2, RefreshCw, Users, Wand2, X } from 'lucide-react'
+import { useEffect } from 'react'
+import { AudioLines, Check, Dices, Info, ListChecks, Music2, RefreshCw, Users, Wand2, X } from 'lucide-react'
 import { useRoomStore } from '../stores/roomStore'
 import { BlueprintStatusPanel } from '../components/ui/BlueprintStatusPanel'
 import { Cover } from '../components/ui/Cover'
@@ -42,7 +42,6 @@ function formatSeconds(value: number) {
 }
 
 export function StudioPage() {
-  const [showTagLibrary, setShowTagLibrary] = useState(false)
   const studio = useStudioStore()
   const { engine, songs } = useAppStore()
   const playSong = usePlayerStore((s) => s.playSong)
@@ -54,8 +53,9 @@ export function StudioPage() {
     seed, negativePrompt, songTitle, pickedGenres, pickedVibes, pickedVocals, pickedInstruments,
     pickedDrums, pickedProduction, pickedEras, pickedCustomTags, pickedStructure, tagFilter,
     customTagInput, blueprint, blueprintStatus, blueprintError, lyricsCraft, lyricsQuality, lyricsQualityBusy, lyricsRewriteBusy, writerStage,
+    enhanceStyleBusy, enhanceWordsBusy, titleBusy,
     writerModel, writerModels, tasks, generating, set, toggleIn, setWriterModel, loadWriterModels,
-    addCustomTag, applyPack, randomIdea, enhanceStyle, generateBlueprint, patchBlueprint, analyzeBlueprintLyrics, rewriteBlueprintLyrics,
+    addCustomTag, applyPack, randomIdea, enhanceStyle, enhanceWords, suggestSongTitle, generateBlueprint, patchBlueprint, analyzeBlueprintLyrics, rewriteBlueprintLyrics,
     acceptBlueprint, rejectBlueprint, resetBlueprint, submitGeneration,
   } = studio
 
@@ -153,19 +153,24 @@ export function StudioPage() {
         </header>
 
         <div className="idea-grid">
-          <label className="stacked span-all">
-            Song Name
+          <div className="stacked-block span-all">
+            <div className="block-head">
+              <span className="chip-label">Song Name</span>
+              <button className="mini-action" onClick={() => void suggestSongTitle()} disabled={titleBusy}>
+                <RefreshCw size={13} /> {titleBusy ? 'Naming...' : 'Suggest Name'}
+              </button>
+            </div>
             <input
               className="title-input"
               value={songTitle}
               onChange={(e) => set({ songTitle: e.target.value })}
-              placeholder="Name the track before it is born"
+              placeholder="Leave blank and DoReMii names it from the lyrics"
             />
-          </label>
+          </div>
 
           <div className="stacked-block">
             <div className="block-head">
-              <span className="chip-label">Lyrics / Idea</span>
+              <span className="chip-label">{lyricsTab === 'write' ? 'Lyrics' : lyricsTab === 'prompt' ? 'Idea' : 'Instrumental'}</span>
               <div className="segmented small">
                 {(['write', 'prompt', 'instrumental'] as const).map((tab) => (
                   <button
@@ -182,7 +187,13 @@ export function StudioPage() {
               <div className="instrumental-note"><Music2 size={18} /> Instrumental mode - no vocals or lyrics will be generated.</div>
             ) : lyricsTab === 'write' ? (
               <>
-                <textarea className="grow-area" value={lyrics} onChange={(e) => set({ lyrics: e.target.value })} placeholder={'[Verse]\nWrite your lyrics here...'} />
+                <textarea className="grow-area roomy" value={lyrics} onChange={(e) => set({ lyrics: e.target.value })} placeholder={'[Verse]\nWrite your lyrics here...'} />
+                <div className="area-foot">
+                  <button className="mini-action accent" onClick={() => void enhanceWords()} disabled={enhanceWordsBusy}>
+                    <Wand2 size={14} /> {enhanceWordsBusy ? 'Polishing...' : 'Enhance Lyrics'}
+                  </button>
+                  <span className="counter">{lyrics.length} chars</span>
+                </div>
                 <div className="chip-wrap">
                   {WORKSHOP_TOOLS.map((tool) => (
                     <button key={tool} className="chip" onClick={() => soon(`Lyrics ${tool}`)}>{tool}</button>
@@ -190,7 +201,15 @@ export function StudioPage() {
                 </div>
               </>
             ) : (
-              <textarea className="grow-area" value={songIdea} onChange={(e) => set({ songIdea: e.target.value })} placeholder="Describe the song you want - the story, mood, energy, hook..." />
+              <>
+                <textarea className="grow-area roomy" value={songIdea} onChange={(e) => set({ songIdea: e.target.value })} placeholder="Describe the song you want - the story, mood, energy, hook..." />
+                <div className="area-foot">
+                  <button className="mini-action accent" onClick={() => void enhanceWords()} disabled={enhanceWordsBusy}>
+                    <Wand2 size={14} /> {enhanceWordsBusy ? 'Sharpening...' : 'Enhance Idea'}
+                  </button>
+                  <span className="counter">{songIdea.length} chars</span>
+                </div>
+              </>
             )}
           </div>
 
@@ -200,68 +219,66 @@ export function StudioPage() {
               <span className="hint">The AI maps your words to engine tags</span>
             </div>
             <textarea
-              className="grow-area"
+              className="grow-area roomy"
               value={styleText}
               onChange={(e) => set({ styleText: e.target.value })}
               placeholder="Describe the sound in your own words - genre, mood, instruments, era, energy..."
             />
             <div className="area-foot">
-              <button className="mini-action accent" onClick={() => void enhanceStyle()} disabled={blueprintStatus === 'generating'}>
-                <Wand2 size={14} /> {blueprintStatus === 'generating' ? 'Enhancing...' : 'Enhance Style'}
+              <button className="mini-action accent" onClick={() => void enhanceStyle()} disabled={enhanceStyleBusy}>
+                <Wand2 size={14} /> {enhanceStyleBusy ? 'Enhancing...' : 'Enhance Style'}
               </button>
               <span className="counter">{styleText.length} chars</span>
             </div>
-            <button className="collapse-row" onClick={() => setShowTagLibrary((v) => !v)}>
-              {showTagLibrary ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-              Browse tag library (optional)
+          </div>
+
+          <div className="stacked-block tag-column">
+            <div className="block-head">
+              <span className="chip-label">Tag Library</span>
               {tagCount > 0 && <em className="count-badge">{tagCount} picked</em>}
-            </button>
-            {showTagLibrary && (
-              <>
-                <span className="chip-label">Preset Packs</span>
-                <div className="chip-wrap">
-                  {PRESET_PACKS.map((pack) => (
-                    <button key={pack.name} className="chip" onClick={() => applyPack(pack)}>{pack.name}</button>
-                  ))}
-                </div>
-                <input className="tag-search" value={tagFilter} onChange={(e) => set({ tagFilter: e.target.value })} placeholder="Search ACE-friendly genres, moods, instruments, production..." />
-                {TAG_CATEGORIES.map((category) => {
-                  const items = category.items.filter((item) => !filter || item.toLowerCase().includes(filter))
-                  if (!items.length) return null
-                  return (
-                    <div className="tag-group" key={category.id}>
-                      <span className="chip-label">{category.label}</span>
-                      <div className="chip-wrap">
-                        {items.map((item) => (
-                          <button
-                            key={item}
-                            className={selectedByCategory[category.id].includes(item) ? 'chip on' : 'chip'}
-                            onClick={() => toggleIn(TAG_STORE_KEYS[category.id], item)}
-                          >
-                            {item}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )
-                })}
-                <div className="custom-tag-row">
-                  <input
-                    value={customTagInput}
-                    onChange={(e) => set({ customTagInput: e.target.value })}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomTag() } }}
-                    placeholder="Add any custom style tag..."
-                  />
-                  <button className="mini-action" onClick={addCustomTag}>Add Tag</button>
-                </div>
-                {!!pickedCustomTags.length && (
+            </div>
+            <span className="chip-label">Preset Packs</span>
+            <div className="chip-wrap">
+              {PRESET_PACKS.map((pack) => (
+                <button key={pack.name} className="chip" onClick={() => applyPack(pack)}>{pack.name}</button>
+              ))}
+            </div>
+            <input className="tag-search" value={tagFilter} onChange={(e) => set({ tagFilter: e.target.value })} placeholder="Search genres, moods, instruments..." />
+            {TAG_CATEGORIES.map((category) => {
+              const items = category.items.filter((item) => !filter || item.toLowerCase().includes(filter))
+              if (!items.length) return null
+              return (
+                <div className="tag-group" key={category.id}>
+                  <span className="chip-label">{category.label}</span>
                   <div className="chip-wrap">
-                    {pickedCustomTags.map((tag) => (
-                      <button key={tag} className="chip on" onClick={() => toggleIn('pickedCustomTags', tag)}>{tag}</button>
+                    {items.map((item) => (
+                      <button
+                        key={item}
+                        className={selectedByCategory[category.id].includes(item) ? 'chip on' : 'chip'}
+                        onClick={() => toggleIn(TAG_STORE_KEYS[category.id], item)}
+                      >
+                        {item}
+                      </button>
                     ))}
                   </div>
-                )}
-              </>
+                </div>
+              )
+            })}
+            <div className="custom-tag-row">
+              <input
+                value={customTagInput}
+                onChange={(e) => set({ customTagInput: e.target.value })}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomTag() } }}
+                placeholder="Add any custom style tag..."
+              />
+              <button className="mini-action" onClick={addCustomTag}>Add Tag</button>
+            </div>
+            {!!pickedCustomTags.length && (
+              <div className="chip-wrap">
+                {pickedCustomTags.map((tag) => (
+                  <button key={tag} className="chip on" onClick={() => toggleIn('pickedCustomTags', tag)}>{tag}</button>
+                ))}
+              </div>
             )}
           </div>
         </div>

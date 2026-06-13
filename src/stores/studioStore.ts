@@ -49,6 +49,9 @@ interface StudioStore {
   lyricsQuality: LyricsQualityReport | null
   lyricsQualityBusy: boolean
   lyricsRewriteBusy: boolean
+  enhanceStyleBusy: boolean
+  enhanceWordsBusy: boolean
+  titleBusy: boolean
   writerStage: string | null
   /** 'auto' = strongest installed Ollama model; 'engine' = ACE's small LM only. */
   writerModel: string
@@ -65,6 +68,8 @@ interface StudioStore {
   applyTemplate: (t: { idea: string; genres: string[]; vibes: string[] }) => void
   randomIdea: () => void
   enhanceStyle: () => Promise<void>
+  enhanceWords: () => Promise<void>
+  suggestSongTitle: () => Promise<void>
   generateBlueprint: () => Promise<void>
   patchBlueprint: (patch: Partial<Pick<BlueprintResult, 'caption' | 'lyrics'>>) => void
   analyzeBlueprintLyrics: () => Promise<void>
@@ -222,6 +227,9 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
   lyricsQuality: null,
   lyricsQualityBusy: false,
   lyricsRewriteBusy: false,
+  enhanceStyleBusy: false,
+  enhanceWordsBusy: false,
+  titleBusy: false,
   writerStage: null,
   writerModel: localStorage.getItem('doremi.writer.model') || 'auto',
   writerModels: [],
@@ -280,39 +288,72 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
     })
     useUiStore.getState().toast('Rolled a fresh idea')
   },
+  // Enhance buttons are Ollama-only text improvers: they NEVER touch the ACE
+  // engine and NEVER trigger a blueprint. Blueprint generation happens in
+  // exactly one place - the Generate Blueprint button.
   enhanceStyle: async () => {
     const s = get()
-    const idea = s.styleText.trim() || s.songIdea.trim()
-    if (!idea) {
+    if (!s.styleText.trim()) {
       useUiStore.getState().toast('Describe the sound you want first')
       return
     }
-    if (useAppStore.getState().engine.health !== 'ready') {
-      useUiStore.getState().toast('Start the engine first - Enhance uses the local AI')
+    set({ enhanceStyleBusy: true })
+    try {
+      const improved = await window.doReMi.enhanceText({
+        kind: 'style',
+        text: s.styleText,
+        tags: selectedTags(s),
+        model: s.writerModel === 'auto' || s.writerModel === 'engine' ? undefined : s.writerModel,
+      })
+      set({ styleText: improved })
+      useUiStore.getState().toast('Style description enhanced')
+    } catch (error) {
+      useUiStore.getState().toast(error instanceof Error ? error.message : String(error))
+    } finally {
+      set({ enhanceStyleBusy: false })
+    }
+  },
+  enhanceWords: async () => {
+    const s = get()
+    const isWrite = s.lyricsTab === 'write'
+    const text = isWrite ? s.lyrics : s.songIdea
+    if (!text.trim()) {
+      useUiStore.getState().toast(isWrite ? 'Write some lyrics first' : 'Describe your idea first')
       return
     }
-    set({ blueprintStatus: 'generating', blueprintError: null })
-    useUiStore.getState().toast('Asking the AI to translate your idea into engine-ready style tags…')
+    set({ enhanceWordsBusy: true })
     try {
-      // The LM knows ACE's accepted tag vocabulary; it rewrites the free-text
-      // prompt into a caption the generator actually understands.
-      const blueprint = await window.doReMi.createBlueprint({
-        query: idea,
-        instrumental: s.vocalMode === 'instrumental',
-        vocalLanguage: s.vocalMode === 'instrumental' || s.language === 'auto' ? 'en' : s.language,
+      const improved = await window.doReMi.enhanceText({
+        kind: isWrite ? 'lyrics' : 'idea',
+        text,
         tags: selectedTags(s),
+        model: s.writerModel === 'auto' || s.writerModel === 'engine' ? undefined : s.writerModel,
       })
-      set({
-        styleText: blueprint.caption || s.styleText,
-        blueprint,
-        blueprintStatus: 'ready',
-        blueprintError: null,
-      })
-      useUiStore.getState().toast('Style adapted to engine-friendly tags - review the blueprint')
+      set(isWrite ? { lyrics: improved } : { songIdea: improved })
+      useUiStore.getState().toast(isWrite ? 'Lyrics polished' : 'Idea sharpened')
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      set({ blueprintStatus: 'error', blueprintError: message })
-      useUiStore.getState().toast(`Enhance failed: ${message}`)
+      useUiStore.getState().toast(error instanceof Error ? error.message : String(error))
+    } finally {
+      set({ enhanceWordsBusy: false })
+    }
+  },
+  suggestSongTitle: async () => {
+    const s = get()
+    const lyricsSource = s.blueprint?.lyrics?.trim() || s.lyrics.trim()
+    const idea = s.songIdea.trim() || s.styleText.trim()
+    if (!lyricsSource && !idea) {
+      useUiStore.getState().toast('Give it an idea or lyrics to name the song from')
+      return
+    }
+    set({ titleBusy: true })
+    try {
+      const title = await window.doReMi.suggestTitle({ lyrics: lyricsSource || idea, idea })
+      set({ songTitle: title })
+      useUiStore.getState().toast(`Named it "${title}"`)
+    } catch (error) {
+      useUiStore.getState().toast(error instanceof Error ? error.message : String(error))
+    } finally {
+      set({ titleBusy: false })
     }
   },
   generateBlueprint: async () => {
@@ -418,6 +459,14 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
         : failedVocalLyrics
           ? 'Lyrics failed quality checks - blueprint blocked'
           : 'Instrumental blueprint ready to review')
+
+      // Auto-name: if the user hasn't titled the song, name it from the fresh
+      // lyrics in the background so nothing ever saves as "Pop" again.
+      if (!failedVocalLyrics && !get().songTitle.trim() && merged.lyrics.trim() && merged.lyrics.trim() !== '[Instrumental]') {
+        void window.doReMi.suggestTitle({ lyrics: merged.lyrics, idea })
+          .then((title) => { if (!useStudioStore.getState().songTitle.trim()) set({ songTitle: title }) })
+          .catch(() => undefined)
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       set({ blueprintStatus: 'error', blueprintError: message, writerStage: null })
@@ -522,12 +571,28 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
   resetBlueprint: () => set({ ...clearBlueprintState() }),
   submitGeneration: async () => {
     const s = get()
-    const cleanTitle = s.songTitle.trim() || s.pickedGenres[0] || 'New DoReMii song'
     const mode: ModeType = s.vocalMode === 'instrumental' ? 'instrumental' : (s.creationMode === 'lyrics' ? 'lyrics' : 'simple')
     const finalLyrics = s.vocalMode === 'vocals' ? (s.lyrics.trim() || (s.blueprintStatus === 'accepted' ? s.blueprint?.lyrics.trim() : '') || '') : ''
     if (s.vocalMode === 'vocals' && !finalLyrics) {
       useUiStore.getState().toast('Generate and accept a blueprint, or write lyrics first')
       return
+    }
+
+    // Auto-name when the field was left empty or on a default: read the final
+    // lyrics (or idea) and produce a real title instead of "Pop".
+    let cleanTitle = s.songTitle.trim()
+    const looksDefault = !cleanTitle || /^new doremii song$/i.test(cleanTitle)
+    if (looksDefault) {
+      try {
+        cleanTitle = await window.doReMi.suggestTitle({
+          lyrics: finalLyrics || s.styleText || s.songIdea,
+          idea: s.songIdea.trim() || s.styleText.trim(),
+        })
+        set({ songTitle: cleanTitle })
+        useUiStore.getState().toast(`Named it "${cleanTitle}"`)
+      } catch {
+        cleanTitle = s.pickedGenres[0] ? `${s.pickedGenres[0]} Song` : 'Untitled Song'
+      }
     }
     const duration = s.durationMode === 'auto'
       ? Math.min(480, Math.max(30, s.pickedStructure.length * 35))

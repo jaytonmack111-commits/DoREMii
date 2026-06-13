@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { promisify } from 'node:util'
 import { ACE_STEP_DIR, DEFAULT_ENGINE_PORT, UV_EXE } from './paths.js'
 import type { EngineStatus } from '../shared/types.js'
 import { getEngineSettings } from './modelSettings.js'
@@ -19,10 +20,21 @@ type ApiResponsePayload = {
   detail?: string
 }
 
+const execFileAsync = promisify(execFile)
+
+/** How long a previously-healthy (or adopted) engine may be unreachable before
+ *  the watchdog declares it dead. Fresh boots get the longer waitForHealth
+ *  window instead, because model loading legitimately takes minutes. */
+const WATCHDOG_UNREACHABLE_MS = 90_000
+
 class EngineManager {
   private process: ChildProcessWithoutNullStreams | null = null
   private adopted = false
   private logs: string[] = []
+  /** Set after the first successful health check; null until then. */
+  private lastHealthyAt: number | null = null
+  /** Set when health checks start failing; cleared on the next success. */
+  private unhealthySince: number | null = null
   private status: EngineStatus = {
     state: 'stopped',
     pid: null,
@@ -115,6 +127,8 @@ class EngineManager {
       this.process = null
     }
     this.adopted = false
+    this.lastHealthyAt = null
+    this.unhealthySince = null
     this.status = {
       ...this.status,
       state: 'stopped',
@@ -124,6 +138,26 @@ class EngineManager {
       startedByDoReMi: false,
     }
     return this.status
+  }
+
+  /** Hard recovery: kill our child AND any stray ACE process holding the
+   *  port (e.g. a wedged adopted engine we have no handle to), then boot
+   *  fresh. Wired to the engine pill so a stuck engine is one click away
+   *  from recovery instead of requiring an app restart. */
+  async forceRestart() {
+    this.addLog('Force restart requested - stopping any engine on the port.')
+    await this.stop()
+    try {
+      await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='uv.exe'" | Where-Object { $_.CommandLine -match 'acestep-api' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+      ], { timeout: 15_000 })
+    } catch {
+      // Best effort - if the sweep fails we still try a fresh start.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    this.status = { ...this.status, lastError: null, lastLogLine: 'Engine restarting fresh.' }
+    return this.start()
   }
 
   private async probe(): Promise<'up' | 'down'> {
@@ -148,6 +182,7 @@ class EngineManager {
       if (!this.process && !this.adopted) return
       await this.refreshHealth()
       if (this.status.health === 'ready') return
+      if (this.status.state === 'error') return // watchdog already called it
     }
     this.status = {
       ...this.status,
@@ -171,6 +206,8 @@ class EngineManager {
         || data.model_initialized === true
         || (Boolean(data.loaded_model) && Boolean(data.loaded_lm_model))
 
+      this.lastHealthyAt = Date.now()
+      this.unhealthySince = null
       this.status = {
         ...this.status,
         state: 'running',
@@ -184,6 +221,25 @@ class EngineManager {
       }
       return this.status
     } catch (error) {
+      if (this.unhealthySince === null) this.unhealthySince = Date.now()
+
+      // Watchdog: an engine that WAS healthy (or was adopted already-running)
+      // and has now been unreachable for a while is dead or wedged - say so
+      // instead of showing "Warming up..." forever. Fresh boots are exempt:
+      // they get waitForHealth's long window while models load.
+      const wasEverHealthy = this.lastHealthyAt !== null || this.adopted
+      const unreachableFor = Date.now() - this.unhealthySince
+      if (wasEverHealthy && unreachableFor > WATCHDOG_UNREACHABLE_MS) {
+        this.status = {
+          ...this.status,
+          state: 'error',
+          health: 'unreachable',
+          lastError: `The engine stopped responding for over ${Math.round(WATCHDOG_UNREACHABLE_MS / 1000)} seconds. Click the engine pill to restart it.`,
+          lastLogLine: 'Engine watchdog: process is unresponsive - restart needed.',
+        }
+        return this.status
+      }
+
       const isManagedStartup = Boolean(this.process || this.adopted || this.status.startedByDoReMi)
       this.status = {
         ...this.status,

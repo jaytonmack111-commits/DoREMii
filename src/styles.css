@@ -381,8 +381,26 @@ h1, h2, h3, p { margin: 0; }
 .grow-area.short { min-height: 60px; }
 .grow-area:focus { border-color: rgba(var(--accent-rgb), 0.65); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.14); }
 
-.idea-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px; align-items: start; }
+/* Step 1: writing boxes stretch wide, the tag library lives in its own
+   right-hand column so it fills the dead space instead of hiding in a
+   collapse row. Narrow windows stack everything cleanly. */
+.idea-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1.25fr) minmax(280px, 0.9fr); gap: 18px; align-items: start; }
 .idea-grid .span-all { grid-column: 1 / -1; }
+.grow-area.roomy { min-height: 170px; }
+.tag-column {
+  padding: 14px;
+  border-radius: calc(var(--radius) * 0.7);
+  border: 1px solid rgba(var(--border-rgb), 0.45);
+  background: rgba(var(--bg-rgb), 0.28);
+}
+.tag-column .tag-group { display: grid; gap: 6px; }
+@media (max-width: 1380px) {
+  .idea-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .tag-column { grid-column: 1 / -1; }
+}
+@media (max-width: 900px) {
+  .idea-grid { grid-template-columns: 1fr; }
+}
 .stacked-block { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .block-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 

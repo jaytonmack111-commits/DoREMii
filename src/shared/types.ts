@@ -287,6 +287,7 @@ export interface DoReMiApi {
   getEngineStatus: () => Promise<EngineStatus>
   startEngine: () => Promise<EngineStatus>
   stopEngine: () => Promise<EngineStatus>
+  restartEngine: () => Promise<EngineStatus>
   getEngineLogs: () => Promise<string[]>
   getEngineSettings: () => Promise<EngineSettings>
   updateEngineSettings: (settings: Partial<EngineSettings>) => Promise<EngineSettings>
@@ -331,6 +332,8 @@ export interface DoReMiApi {
     intent?: SongIntent
   }) => Promise<LyricsCraftResult>
   analyzeLyrics: (input: { lyrics: string; idea?: string; model?: string; intent?: SongIntent }) => Promise<LyricsQualityReport>
+  enhanceText: (input: { kind: 'style' | 'idea' | 'lyrics'; text: string; tags?: string[]; model?: string }) => Promise<string>
+  suggestTitle: (input: { lyrics: string; idea?: string; model?: string }) => Promise<string>
   rewriteLyrics: (input: { lyrics: string; idea?: string; instruction: string; model?: string; intent?: SongIntent }) => Promise<LyricsCraftResult>
   startWritersRoom: (input: { idea: string; tags: string[]; lyrics: string; caption: string; model?: string; intent?: SongIntent }) => Promise<RoomState>
   sendToWritersRoom: (text: string) => Promise<RoomState>

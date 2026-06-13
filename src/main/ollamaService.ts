@@ -653,6 +653,64 @@ export async function isWriterAvailable(): Promise<{ available: boolean; model: 
   }
 }
 
+const ENHANCE_PROMPTS: Record<'style' | 'idea' | 'lyrics', string> = {
+  style: `You polish sound-and-style descriptions for an AI music generator.
+Rewrite the user's text into ONE vivid production description: genre, energy, vocal character, key instruments, drum feel, production texture, era. Keep every intention the user expressed. 2-4 sentences, no lyrics, no section tags, no preamble.`,
+  idea: `You sharpen song concepts.
+Rewrite the user's idea into a tighter concept: clear subject, emotional angle, and ONE core image or metaphor the song can hang on. Keep their topic and language exactly. 1-3 sentences, no lyrics, no preamble.`,
+  lyrics: `You are a lyric editor. Improve the user's lyrics IN PLACE: keep their structure tags, story, and most of their words. Fix weak lines, rhythm, and rhyme; tighten syllables for singability (6-10 per line). Output ONLY the improved lyrics, nothing else.`,
+}
+
+/** Quick single-shot text improver for the Studio's Enhance buttons.
+ *  Ollama-only: never touches the ACE engine, so it works while ACE warms. */
+export async function enhanceText(input: { kind: 'style' | 'idea' | 'lyrics'; text: string; tags?: string[]; model?: string }): Promise<string> {
+  const text = input.text.trim()
+  if (!text) throw new Error('Write something first, then Enhance can improve it.')
+  const model = await pickWriterModel(input.model)
+  if (!model) {
+    const why = (await isWriterAvailable()).reason
+    throw new Error(`Enhance needs the local writer (Ollama): ${why}`)
+  }
+  const tagLine = input.tags?.length ? `\n\nSelected style tags to respect: ${input.tags.join(', ')}` : ''
+  const { text: improved } = await chatRaw(model, [
+    { role: 'system', content: ENHANCE_PROMPTS[input.kind] },
+    { role: 'user', content: `${text}${tagLine}` },
+  ], 0.7, false, `enhance-${input.kind}`)
+  const cleaned = improved.trim().replace(/^["'“]|["'”]$/g, '')
+  if (!cleaned) throw new Error('The writer returned nothing - try again.')
+  return cleaned
+}
+
+/** Deterministic title fallback: strongest hook line from the lyrics. */
+export function fallbackTitle(lyrics: string, idea?: string): string {
+  const lines = lyrics.split(/\r?\n/).map((l) => l.trim())
+  const chorusIndex = lines.findIndex((l) => /^\[.*chorus.*\]$/i.test(l))
+  const searchFrom = chorusIndex >= 0 ? chorusIndex + 1 : 0
+  const hook = lines.slice(searchFrom).find((l) => l && !l.startsWith('[') && !l.startsWith('('))
+    ?? lines.find((l) => l && !l.startsWith('[') && !l.startsWith('('))
+  const source = hook || idea || 'Untitled Song'
+  const words = source.replace(/[.,!?;:"]+/g, '').split(/\s+/).filter(Boolean).slice(0, 6)
+  return words.map((w) => (w.length > 2 ? w[0].toUpperCase() + w.slice(1) : w)).join(' ') || 'Untitled Song'
+}
+
+/** Name the song from its final lyrics. Falls back to the hook line when the
+ *  writer is unavailable, so a song is never saved as "Pop" again. */
+export async function suggestTitle(input: { lyrics: string; idea?: string; model?: string }): Promise<string> {
+  const model = await pickWriterModel(input.model)
+  if (!model) return fallbackTitle(input.lyrics, input.idea)
+  try {
+    const { text } = await chatRaw(model, [
+      { role: 'system', content: 'You name songs. Read the lyrics and reply with ONE evocative title, 1-5 words, Title Case. No quotes, no punctuation at the end, no explanation - just the title.' },
+      { role: 'user', content: `${input.idea ? `Song concept: ${input.idea}\n\n` : ''}Lyrics:\n${input.lyrics.slice(0, 2400)}` },
+    ], 0.8, false, 'suggest-title')
+    const title = text.trim().split(/\r?\n/)[0].replace(/^["'“]|["'”]$/g, '').replace(/[.!?]+$/, '').trim()
+    if (title && title.length <= 60 && !/^(title|song)\b[:\s]/i.test(title)) return title
+    return fallbackTitle(input.lyrics, input.idea)
+  } catch {
+    return fallbackTitle(input.lyrics, input.idea)
+  }
+}
+
 export function pullOllamaModel(model: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn('ollama', ['pull', model], {

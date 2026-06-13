@@ -13,6 +13,7 @@ const api: DoReMiApi = {
   getEngineStatus: () => ipcRenderer.invoke('engine:status'),
   startEngine: () => ipcRenderer.invoke('engine:start'),
   stopEngine: () => ipcRenderer.invoke('engine:stop'),
+  restartEngine: () => ipcRenderer.invoke('engine:restart'),
   getEngineLogs: () => ipcRenderer.invoke('engine:logs'),
   getEngineSettings: () => ipcRenderer.invoke('engine:settings:get'),
   updateEngineSettings: (settings) => ipcRenderer.invoke('engine:settings:update', settings),
@@ -60,6 +61,8 @@ const api: DoReMiApi = {
     return () => { ipcRenderer.off('writer:progress', handler) }
   },
   craftLyrics: (input) => ipcRenderer.invoke('writer:craftLyrics', input),
+  enhanceText: (input) => ipcRenderer.invoke('writer:enhanceText', input),
+  suggestTitle: (input) => ipcRenderer.invoke('writer:suggestTitle', input),
 }
 
 contextBridge.exposeInMainWorld('doReMi', api)

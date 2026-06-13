@@ -5,16 +5,27 @@ import { useUiStore } from '../../stores/uiStore'
 function engineLabel(engine: ReturnType<typeof useAppStore.getState>['engine'], busy: boolean) {
   if (busy) return 'Working...'
   if (engine.health === 'ready') return 'Engine ready'
-  if (engine.health === 'warming' || engine.state === 'starting') return 'Warming up...'
-  if (engine.state === 'error') return 'Engine error'
-  return 'Starting...'
+  if (engine.health === 'warming' || engine.state === 'starting') return 'Warming up... (click to force restart)'
+  if (engine.state === 'error') return 'Engine error - click to restart'
+  if (engine.state === 'stopped' || engine.health === 'unknown') return 'Start engine'
+  return 'Engine unreachable - click to restart'
 }
 
 export function TopBar() {
   const { setRoute, setShowThemes, soon } = useUiStore()
-  const { engine, busy, startEngine, stopEngine } = useAppStore()
+  const { engine, busy, startEngine, stopEngine, restartEngine } = useAppStore()
   const engineReady = engine.health === 'ready'
   const warming = engine.health === 'warming' || engine.state === 'starting'
+
+  // The pill always moves toward a working engine: ready -> stop;
+  // stopped -> start; stuck/warming/error -> hard restart. The watchdog flips
+  // a wedged engine to error on its own, but the click escape hatch means a
+  // stuck "Warming up..." is never more than one click from recovery.
+  function onPillClick() {
+    if (engineReady) return void stopEngine()
+    if (engine.state === 'stopped' || engine.health === 'unknown') return void startEngine()
+    return void restartEngine()
+  }
 
   return (
     <header className="topbar">
@@ -29,8 +40,8 @@ export function TopBar() {
         <button
           type="button"
           className={`engine-pill ${engineReady ? 'ready' : warming ? 'warming' : engine.state}`}
-          onClick={() => (engineReady ? void stopEngine() : void startEngine())}
-          disabled={busy || warming}
+          onClick={onPillClick}
+          disabled={busy}
           title={engine.lastError || engine.lastLogLine || 'Local music engine'}
         >
           <span className={`status-dot ${engineReady ? 'ready' : warming ? 'starting' : engine.state}`} />

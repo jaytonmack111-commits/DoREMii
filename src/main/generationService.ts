@@ -13,6 +13,29 @@ import type {
 import { DEFAULT_ENGINE_PORT, getDoReMiPaths } from './paths.js'
 import { insertGenerationTask, insertSong, updateGenerationTask } from './database.js'
 import { getEngineSettings } from './modelSettings.js'
+import { engineManager } from './engineManager.js'
+
+/** Throw a human-readable error instead of letting a raw fetch fail when the
+ *  engine isn't up. Every ACE-facing entry point calls this first. */
+function requireEngine(action: string) {
+  const status = engineManager.getStatus()
+  if (status.health === 'ready') return
+  const why = status.state === 'starting'
+    ? 'it is still warming up - models are loading'
+    : status.state === 'error'
+      ? `it hit an error (${status.lastError || 'unknown'})`
+      : 'it is not running'
+  throw new Error(`Can't ${action} yet: the engine isn't ready (${why}). Watch the engine pill up top - click it to restart if it's stuck.`)
+}
+
+/** Translate low-level fetch failures into something a musician can read. */
+function friendlyEngineError(error: unknown, action: string): Error {
+  const message = error instanceof Error ? error.message : String(error)
+  if (/fetch failed|ECONNREFUSED|ECONNRESET|socket|network/i.test(message)) {
+    return new Error(`Lost the connection to the engine while trying to ${action} - it may have crashed mid-request. Click the engine pill to restart it.`)
+  }
+  return error instanceof Error ? error : new Error(message)
+}
 
 const BASE_URL = `http://127.0.0.1:${DEFAULT_ENGINE_PORT}`
 
@@ -242,6 +265,7 @@ export async function createBlueprint(input: {
   vocalLanguage: string
   tags: string[]
 }): Promise<BlueprintResult> {
+  requireEngine('generate a blueprint')
   const settings = getEngineSettings()
   // The 5Hz LM is a fine-tuned expander, not an instruction-following chat
   // model. It expects a short natural description, exactly like the Gradio
@@ -252,14 +276,20 @@ export async function createBlueprint(input: {
     input.tags.length ? `Style: ${input.tags.join(', ')}` : '',
   ].filter(Boolean).join('. ')
 
-  let body = await requestSample(query, input.instrumental, input.vocalLanguage)
-  let data: BlueprintApiData = body.data ?? {}
-
-  // The LM occasionally returns an arrangement sheet instead of sung lyrics.
-  // Re-roll once with the same clean prompt - fresh sampling usually lands.
-  if (!input.instrumental && lyricsAreJustTags(data.lyrics || '')) {
-    body = await requestSample(query, false, input.vocalLanguage)
+  let body: ApiEnvelope<BlueprintApiData>
+  let data: BlueprintApiData
+  try {
+    body = await requestSample(query, input.instrumental, input.vocalLanguage)
     data = body.data ?? {}
+
+    // The LM occasionally returns an arrangement sheet instead of sung lyrics.
+    // Re-roll once with the same clean prompt - fresh sampling usually lands.
+    if (!input.instrumental && lyricsAreJustTags(data.lyrics || '')) {
+      body = await requestSample(query, false, input.vocalLanguage)
+      data = body.data ?? {}
+    }
+  } catch (error) {
+    throw friendlyEngineError(error, 'generate the blueprint')
   }
 
   return {
@@ -295,11 +325,12 @@ export async function createGeneration(request: GenerationRequest): Promise<Gene
   insertGenerationTask(task)
 
   try {
+    requireEngine('generate music')
     const response = await fetch(`${BASE_URL}/release_task`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildAcePayload(request)),
-    })
+    }).catch((error) => { throw friendlyEngineError(error, 'submit the song') })
 
   const body = await response.json() as ApiEnvelope<ReleaseTaskData>
     if (!response.ok || body.error || (body.code && body.code >= 400)) {
