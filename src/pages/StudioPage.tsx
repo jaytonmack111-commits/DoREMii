@@ -493,6 +493,17 @@ export function StudioPage() {
                           ))}
                         </div>
                       )}
+                      {lyricsQuality.prosody && (
+                        <div className="structure-lock">
+                          <strong>Prosody / flow</strong>
+                          <div className="chip-wrap">
+                            <span className="chip tiny on">avg {lyricsQuality.prosody.averageSyllables} syllables</span>
+                            {lyricsQuality.prosody.outlierLines.slice(0, 2).map((line) => <span className="chip tiny warn" key={line}>{line}</span>)}
+                            {lyricsQuality.prosody.fourBarWarnings.slice(0, 2).map((line) => <span className="chip tiny warn" key={line}>{line}</span>)}
+                            {lyricsQuality.prosody.nurseryRhymeWarnings.slice(0, 2).map((line) => <span className="chip tiny warn" key={line}>{line}</span>)}
+                          </div>
+                        </div>
+                      )}
                       {!!lyricsQuality.issues.length && (
                         <ul className="quality-list bad">
                           {lyricsQuality.issues.slice(0, 5).map((issue) => <li key={issue}>{issue}</li>)}

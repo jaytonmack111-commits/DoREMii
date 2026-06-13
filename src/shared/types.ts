@@ -149,6 +149,12 @@ export interface LyricsQualityReport {
     repetition: number
     engineSafety: number
   }
+  prosody?: {
+    averageSyllables: number
+    outlierLines: string[]
+    fourBarWarnings: string[]
+    nurseryRhymeWarnings: string[]
+  }
   topicLock?: {
     requiredTerms: string[]
     matchedTerms: string[]
@@ -315,6 +321,7 @@ export interface DoReMiApi {
   startEngine: () => Promise<EngineStatus>
   stopEngine: () => Promise<EngineStatus>
   restartEngine: () => Promise<EngineStatus>
+  cleanupLocalWorkers: () => Promise<EngineStatus>
   getEngineLogs: () => Promise<string[]>
   getEngineSettings: () => Promise<EngineSettings>
   updateEngineSettings: (settings: Partial<EngineSettings>) => Promise<EngineSettings>

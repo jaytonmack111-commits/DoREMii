@@ -439,7 +439,80 @@ function validateLyrics(lyrics: string, intent?: SongIntent | null, fallbackIdea
   if (topicLock.forbiddenDrift.length) {
     issues.push(`Off-topic drift detected: ${topicLock.forbiddenDrift.slice(0, 5).join(', ')}.`)
   }
+  const prosody = analyzeProsody(clean)
+  if (prosody.outlierLines.length) {
+    issues.push(`Uneven syllable flow: ${prosody.outlierLines[0]}`)
+  }
+  if (prosody.fourBarWarnings.length) {
+    issues.push(prosody.fourBarWarnings[0])
+  }
+  if (prosody.nurseryRhymeWarnings.length) {
+    issues.push(prosody.nurseryRhymeWarnings[0])
+  }
   return issues
+}
+
+function estimateSyllables(line: string) {
+  const words = line.toLowerCase().replace(/[^a-z'\s-]/g, ' ').split(/\s+/).filter(Boolean)
+  let total = 0
+  for (const word of words) {
+    const clean = word.replace(/'s$/, '').replace(/[^a-z]/g, '')
+    if (!clean) continue
+    const groups = clean.match(/[aeiouy]+/g)?.length ?? 1
+    const silentE = clean.length > 3 && /e$/.test(clean) && !/[aeiouy]le$/.test(clean) ? 1 : 0
+    total += Math.max(1, groups - silentE)
+  }
+  return Math.max(1, total)
+}
+
+function endRhymeKey(line: string) {
+  const last = line.toLowerCase().replace(/[^a-z'\s-]/g, ' ').split(/\s+/).filter(Boolean).pop() ?? ''
+  const clean = last.replace(/'s$/, '').replace(/[^a-z]/g, '')
+  if (!clean) return ''
+  const match = clean.match(/[aeiouy][a-z]*$/)
+  return match?.[0] ?? clean.slice(-3)
+}
+
+function analyzeProsody(lyrics: string): NonNullable<LyricsQualityReport['prosody']> {
+  const sections = sungLinesBySection(lyrics)
+  const allSyllables: number[] = []
+  const outlierLines: string[] = []
+  const fourBarWarnings: string[] = []
+  const nurseryRhymeWarnings: string[] = []
+
+  for (const [section, lines] of Object.entries(sections)) {
+    if (section === 'untagged' || !lines.length) continue
+    const syllables = lines.map(estimateSyllables)
+    allSyllables.push(...syllables)
+    const avg = syllables.reduce((sum, n) => sum + n, 0) / syllables.length
+    lines.forEach((line, index) => {
+      const count = syllables[index]
+      if (count < 4 || count > 14 || Math.abs(count - avg) > 4) {
+        outlierLines.push(`[${section}] ${count} syllables: "${line}"`)
+      }
+    })
+    if (/verse|chorus/.test(section) && lines.length > 2 && ![4, 6, 8].includes(lines.length)) {
+      fourBarWarnings.push(`[${section}] has ${lines.length} sung lines; 4, 6, or 8 usually lands cleaner for ACE timing.`)
+    }
+    const keys = lines.map(endRhymeKey).filter(Boolean)
+    if (keys.length >= 4) {
+      const perfectPairs = keys.slice(0, -1).filter((key, index) => key && key === keys[index + 1]).length
+      const uniqueRatio = new Set(keys).size / keys.length
+      if (perfectPairs >= 2 || uniqueRatio < 0.45) {
+        nurseryRhymeWarnings.push(`[${section}] leans too hard on obvious end rhymes; use slant/internal rhyme or vary the cadence.`)
+      }
+    }
+  }
+
+  const averageSyllables = allSyllables.length
+    ? Math.round((allSyllables.reduce((sum, n) => sum + n, 0) / allSyllables.length) * 10) / 10
+    : 0
+  return {
+    averageSyllables,
+    outlierLines: outlierLines.slice(0, 4),
+    fourBarWarnings: fourBarWarnings.slice(0, 4),
+    nurseryRhymeWarnings: nurseryRhymeWarnings.slice(0, 4),
+  }
 }
 
 function buildQualityReport(
@@ -454,6 +527,7 @@ function buildQualityReport(
   const sectionNames = Object.keys(sections)
   const allLines = Object.values(sections).flat()
   const issues = validateLyrics(clean, intent, fallbackIdea)
+  const prosody = analyzeProsody(clean)
   if (semanticAdherence?.verdict === 'fail') {
     issues.push(`Prompt adherence failed: ${semanticAdherence.notes[0] ?? 'lyrics drift away from the requested idea'}.`)
   } else if (semanticAdherence?.verdict === 'needs_work') {
@@ -532,6 +606,7 @@ function buildQualityReport(
       repetition: issues.some((issue) => /repeated/i.test(issue)) ? 40 : 88,
       engineSafety: issues.some((issue) => /stage|screenplay|Off-topic/i.test(issue)) ? 45 : 92,
     },
+    prosody,
     semanticAdherence: semanticAdherence ?? undefined,
     topicLock,
     modelCritique,

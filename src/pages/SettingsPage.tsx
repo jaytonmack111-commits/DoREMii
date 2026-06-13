@@ -122,6 +122,19 @@ export function SettingsPage() {
             <button className="chip" onClick={() => setShowSetup(true)}><Wrench size={13} /> First-Run Wizard</button>
             <button className="chip" onClick={toggleLogs}>Error Doctor / Logs</button>
             <button className="chip" onClick={() => soon('Open output folder')}><FolderOpen size={13} /> Output Folder</button>
+            <button
+              className="chip danger"
+              onClick={() => {
+                void window.doReMi.cleanupLocalWorkers()
+                  .then((status) => {
+                    useAppStore.setState({ engine: status })
+                    toast('Stopped DoReMii ACE/Python/Ollama worker processes')
+                  })
+                  .catch((error) => toast(error instanceof Error ? error.message : String(error)))
+              }}
+            >
+              <Cpu size={13} /> Free Local AI Memory
+            </button>
           </div>
           {showLogs && (
             <div className="log-box">
@@ -206,6 +219,21 @@ export function SettingsPage() {
             <FeatureCard icon={<Brain size={18} />} title="Auto Caption / Lyrics" desc="Use the selected 5Hz LM to label training samples." onClick={() => soon('Auto Label')} />
             <FeatureCard icon={<Wrench size={18} />} title="LoRA Training" desc="Train separate adapters without overwriting ACE base models." onClick={() => soon('LoRA Training')} />
             <FeatureCard icon={<RefreshCw size={18} />} title="Adapter Rollback" desc="Switch, unload or roll back trained adapters safely." onClick={() => soon('Adapter Rollback')} />
+          </div>
+        </div>
+
+        <div className="glass-panel">
+          <div className="panel-head"><h3>Expansion Roadmap</h3></div>
+          <p className="muted-copy">These are now tracked as first-class DoReMii modules so the big dream features have a home instead of living as loose ideas.</p>
+          <div className="feature-grid compact">
+            <FeatureCard icon={<Palette size={18} />} title="Cover Art Generation" desc="Generate cover art from title, lyrics, mood, and final audio metadata." onClick={() => soon('Cover Art Generation')} />
+            <FeatureCard icon={<SlidersHorizontal size={18} />} title="Album / Mix Cards" desc="Better Daily Mix, Neon Nights, Chill Vibes, and collection artwork." onClick={() => soon('Album / Mix Cards')} />
+            <FeatureCard icon={<Cpu size={18} />} title="Stem Separation" desc="Split vocals, drums, bass, and melody with an optional local model." onClick={() => soon('Stem Separation')} />
+            <FeatureCard icon={<Gauge size={18} />} title="Timeline Editor" desc="Arrange intro, verse, chorus, bridge, outro, repaints, and extensions visually." onClick={() => soon('Timeline Editor')} />
+            <FeatureCard icon={<Wrench size={18} />} title="LoRA / Training Hub" desc="Build datasets and train safe style adapters without touching base checkpoints." onClick={() => soon('LoRA / Training Hub')} />
+            <FeatureCard icon={<Brain size={18} />} title="Multi-Engine Backend" desc="Route ACE plus future local/open models under one Studio workflow." onClick={() => soon('Multi-Engine Backend')} />
+            <FeatureCard icon={<Download size={18} />} title="DAW / Plugin Experiments" desc="Explore VST/bridge workflows for FL Studio, Ableton, Reaper, and more." onClick={() => soon('DAW / Plugin Experiments')} />
+            <FeatureCard icon={<Palette size={18} />} title="Visualizer / Music Video" desc="Reactive visuals and later music-to-video tools tied to finished songs." onClick={() => soon('Visualizer / Music Video')} />
           </div>
         </div>
 

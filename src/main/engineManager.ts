@@ -123,7 +123,16 @@ class EngineManager {
 
   async stop() {
     if (this.process) {
-      this.process.kill()
+      const pid = this.process.pid
+      if (pid) {
+        try {
+          await execFileAsync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { timeout: 10_000 })
+        } catch {
+          this.process.kill()
+        }
+      } else {
+        this.process.kill()
+      }
       this.process = null
     }
     this.adopted = false
@@ -148,10 +157,11 @@ class EngineManager {
     try {
       await execFileAsync('powershell.exe', [
         '-NoProfile', '-Command',
-        `$patterns = @('acestep-api','ACE-Step-1.5','DoReMi','DoReMii'); ` +
-        `Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='uv.exe' OR Name='ollama.exe' OR Name='ollama_llama_server.exe'" | ` +
-        `Where-Object { $cmd = $_.CommandLine; $patterns | Where-Object { $cmd -match [regex]::Escape($_) } } | ` +
-        `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+        `$patterns = @('acestep-api','ACE-Step-1.5','${ACE_STEP_DIR.replace(/\\/g, '\\\\')}','DoReMi','DoReMii'); ` +
+        `$names = @('python.exe','pythonw.exe','uv.exe','ollama_llama_server.exe'); ` +
+        `Get-CimInstance Win32_Process | ` +
+        `Where-Object { $names -contains $_.Name -and ($cmd = $_.CommandLine) -and ($patterns | Where-Object { $cmd -match [regex]::Escape($_) }) } | ` +
+        `ForEach-Object { taskkill /PID $_.ProcessId /T /F 2>$null }`,
       ], { timeout: 15_000 })
     } catch {
       // Best effort on app shutdown.

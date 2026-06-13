@@ -14,6 +14,7 @@ const api: DoReMiApi = {
   startEngine: () => ipcRenderer.invoke('engine:start'),
   stopEngine: () => ipcRenderer.invoke('engine:stop'),
   restartEngine: () => ipcRenderer.invoke('engine:restart'),
+  cleanupLocalWorkers: () => ipcRenderer.invoke('engine:cleanupWorkers'),
   getEngineLogs: () => ipcRenderer.invoke('engine:logs'),
   getEngineSettings: () => ipcRenderer.invoke('engine:settings:get'),
   updateEngineSettings: (settings) => ipcRenderer.invoke('engine:settings:update', settings),

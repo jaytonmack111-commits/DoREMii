@@ -11,6 +11,7 @@ import { endRoom, sendToRoom, startRoom } from './writersRoomService.js'
 import { beginEngineJob, endEngineJob, getConductorState, sleepOllama, withWriter } from './aiConductor.js'
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
+let quitCleanupStarted = false
 
 app.setName('DoReMi')
 
@@ -65,6 +66,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('engine:start', () => engineManager.start())
   ipcMain.handle('engine:stop', () => engineManager.stop())
   ipcMain.handle('engine:restart', () => engineManager.forceRestart())
+  ipcMain.handle('engine:cleanupWorkers', () => engineManager.shutdown())
   ipcMain.handle('engine:logs', () => engineManager.getLogs())
   ipcMain.handle('engine:settings:get', () => getEngineSettings())
   ipcMain.handle('engine:settings:update', (_event, patch) => updateEngineSettings(patch))
@@ -125,8 +127,12 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', async () => {
-  await sleepOllama()
-  const status = engineManager.getStatus()
-  if (status.startedByDoReMi) await engineManager.shutdown()
+app.on('before-quit', (event) => {
+  if (quitCleanupStarted) return
+  quitCleanupStarted = true
+  event.preventDefault()
+  void Promise.resolve()
+    .then(() => sleepOllama())
+    .then(() => engineManager.shutdown())
+    .finally(() => app.quit())
 })

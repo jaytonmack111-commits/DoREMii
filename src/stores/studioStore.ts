@@ -907,6 +907,10 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
       } else if (task.aceTaskId) {
         beginPolling(task)
       }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      useAppStore.getState().pushLog(`DoReMii generation exception: ${message}`)
+      useUiStore.getState().toast(`Generation failed: ${message}`)
     } finally {
       set({ generating: false })
     }
