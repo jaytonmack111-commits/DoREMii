@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react'
 import { AlertCircle, RotateCcw, X, Wand2 } from 'lucide-react'
+import type { LyricsDraftSnapshot } from '../../shared/types'
 
 interface Props {
   status: 'idle' | 'generating' | 'ready' | 'accepted' | 'error'
   error: string | null
   writerStage: string | null
   notes?: string[]
+  startedAt?: number | null
+  stageStartedAt?: number | null
+  drafts?: LyricsDraftSnapshot[]
   onRetry: () => void
   onCancel: () => void
 }
@@ -24,32 +28,17 @@ function formatTimer(seconds: number) {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-export function BlueprintStatusPanel({ status, error, writerStage, notes = [], onRetry, onCancel }: Props) {
-  const [elapsed, setElapsed] = useState(0)
-  const [stageElapsed, setStageElapsed] = useState(0)
-
-  useEffect(() => {
-    if (status !== 'generating') {
-      const reset = window.setTimeout(() => {
-        setElapsed(0)
-        setStageElapsed(0)
-      }, 0)
-      return () => clearTimeout(reset)
-    }
-
-    const timer = window.setInterval(() => {
-      setElapsed((prev) => prev + 1)
-      setStageElapsed((prev) => prev + 1)
-    }, 1000)
-
-    return () => clearInterval(timer)
-  }, [status])
+export function BlueprintStatusPanel({ status, error, writerStage, notes = [], startedAt, stageStartedAt, drafts = [], onRetry, onCancel }: Props) {
+  const [now, setNow] = useState(() => Date.now())
+  const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null)
 
   useEffect(() => {
     if (status !== 'generating') return
-    const reset = window.setTimeout(() => setStageElapsed(0), 0)
-    return () => clearTimeout(reset)
-  }, [writerStage, status])
+    const timer = window.setInterval(() => {
+      setNow(Date.now())
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [status])
 
   if (status === 'idle' || status === 'ready' || status === 'accepted') return null
   if (status === 'error') {
@@ -78,6 +67,9 @@ export function BlueprintStatusPanel({ status, error, writerStage, notes = [], o
     else if (writerStage.includes('rewrite')) activeIndex = 3
     else activeIndex = 0
   }
+  const elapsed = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0
+  const stageElapsed = stageStartedAt ? Math.max(0, Math.floor((now - stageStartedAt) / 1000)) : elapsed
+  const selectedDraft = drafts.find((draft) => draft.id === selectedDraftId) ?? drafts[drafts.length - 1] ?? null
   return (
     <div className="blueprint-status generating-state">
       <div className="gen-header">
@@ -106,7 +98,7 @@ export function BlueprintStatusPanel({ status, error, writerStage, notes = [], o
         <div className="progress-fill" style={{ width: `${Math.max(5, ((activeIndex + 1) / STAGES.length) * 100)}%` }} />
       </div>
       <div className="blueprint-thoughts" aria-live="polite">
-        <strong>What the writer is doing</strong>
+        <strong>Live writer notes</strong>
         {notes.length ? (
           <ul>
             {notes.map((note) => <li key={note}>{note}</li>)}
@@ -115,6 +107,36 @@ export function BlueprintStatusPanel({ status, error, writerStage, notes = [], o
           <p>Preparing the song intent packet and waiting for the first writer update.</p>
         )}
       </div>
+      {drafts.length > 0 && (
+        <div className="blueprint-draft-tray">
+          <div className="draft-tray-head">
+            <strong>Draft snapshots</strong>
+            <span>Compare how the song changes as the writer revises.</span>
+          </div>
+          <div className="draft-tabs" role="tablist" aria-label="Blueprint draft snapshots">
+            {drafts.map((draft) => (
+              <button
+                key={draft.id}
+                type="button"
+                className={`draft-tab ${selectedDraft?.id === draft.id ? 'active' : ''}`}
+                onClick={() => setSelectedDraftId(draft.id)}
+              >
+                {draft.label}
+                {draft.quality && <span>{draft.quality.score}/100</span>}
+              </button>
+            ))}
+          </div>
+          {selectedDraft && (
+            <div className="draft-preview">
+              <div className="draft-preview-meta">
+                <span>{selectedDraft.note}</span>
+                {selectedDraft.quality && <span>{selectedDraft.quality.verdict.replace('_', ' ')}</span>}
+              </div>
+              <pre>{selectedDraft.lyrics}</pre>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

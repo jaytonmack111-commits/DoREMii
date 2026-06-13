@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
-import type { DoReMiApi, RoomAgent } from '../shared/types.js'
+import type { DoReMiApi, RoomAgent, WriterProgressEvent } from '../shared/types.js'
 
 const api: DoReMiApi = {
   setZoom: (factor: number) => {
@@ -56,7 +56,9 @@ const api: DoReMiApi = {
     return () => { ipcRenderer.off('room:typing', handler) }
   },
   onWriterProgress: (callback) => {
-    const handler = (_event: Electron.IpcRendererEvent, stage: string) => callback(stage)
+    const handler = (_event: Electron.IpcRendererEvent, payload: string | WriterProgressEvent) => {
+      callback(typeof payload === 'string' ? { stage: payload } : payload)
+    }
     ipcRenderer.on('writer:progress', handler)
     return () => { ipcRenderer.off('writer:progress', handler) }
   },

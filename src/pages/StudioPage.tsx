@@ -57,6 +57,7 @@ export function StudioPage() {
     seed, negativePrompt, songTitle, pickedGenres, pickedVibes, pickedVocals, pickedInstruments,
     pickedDrums, pickedProduction, pickedEras, pickedCustomTags, pickedStructure, tagFilter,
     customTagInput, blueprint, blueprintStatus, blueprintError, lyricsCraft, lyricsQuality, lyricsQualityBusy, lyricsRewriteBusy, writerStage, blueprintNotes,
+    blueprintStartedAt, writerStageStartedAt, blueprintDrafts,
     titleBusy, conceptBusy,
     thinkingPower, energy, vocalGender, tempoFeel, guidanceScale, inferenceSteps, lmTemperature, lmTopP, repetitionPenalty, constrainedDecoding,
     writerModel, writerModels, tasks, generating, activeTab, actionQueue, runningAction,
@@ -362,6 +363,9 @@ export function StudioPage() {
               error={blueprintError}
               writerStage={writerStage}
               notes={blueprintNotes}
+              startedAt={blueprintStartedAt}
+              stageStartedAt={writerStageStartedAt}
+              drafts={blueprintDrafts}
               onRetry={() => queueAction('generateBlueprint')}
               onCancel={resetBlueprint}
             />
@@ -414,6 +418,22 @@ export function StudioPage() {
                     </button>
                   )}
                 </div>
+                {lyricsCraft?.drafts?.length ? (
+                  <details className="draft-history">
+                    <summary>Draft history ({lyricsCraft.drafts.length})</summary>
+                    <div className="draft-history-grid">
+                      {lyricsCraft.drafts.map((draft) => (
+                        <details key={draft.id} className="draft-history-item">
+                          <summary>
+                            <span>{draft.label}</span>
+                            {draft.quality && <em>{draft.quality.score}/100</em>}
+                          </summary>
+                          <pre>{draft.lyrics}</pre>
+                        </details>
+                      ))}
+                    </div>
+                  </details>
+                ) : null}
                 {lyricsQuality && (
                   <div className={`quality-card ${lyricsQuality.verdict}`}>
                     <div className="quality-score">

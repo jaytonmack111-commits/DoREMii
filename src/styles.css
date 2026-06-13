@@ -1296,6 +1296,124 @@ button:active:not(:disabled) { transform: scale(0.97); }
   font-size: calc(12.5px * var(--font-scale));
 }
 
+.blueprint-draft-tray,
+.draft-history {
+  border: 1px solid rgba(var(--border-rgb), 0.45);
+  border-radius: calc(var(--radius) - 4px);
+  background: rgba(var(--surface-2-rgb), 0.34);
+  padding: 12px;
+}
+.draft-tray-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.draft-tray-head strong,
+.draft-history > summary {
+  font-size: calc(12px * var(--font-scale));
+  color: var(--text);
+  font-weight: 850;
+}
+.draft-tray-head span {
+  color: var(--muted);
+  font-size: calc(11.5px * var(--font-scale));
+}
+.draft-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.draft-tab {
+  min-height: 32px;
+  border: 1px solid rgba(var(--border-rgb), 0.55);
+  border-radius: calc(var(--radius) - 6px);
+  background: rgba(var(--surface-rgb), 0.58);
+  color: var(--text);
+  padding: 7px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: calc(12px * var(--font-scale));
+  font-weight: 800;
+  cursor: pointer;
+}
+.draft-tab span {
+  color: var(--muted);
+  font-size: calc(10.5px * var(--font-scale));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.draft-tab.active {
+  color: var(--button-text);
+  border-color: rgba(var(--accent-rgb), 0.75);
+  background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.95), rgba(var(--accent-2-rgb), 0.85));
+  box-shadow: 0 0 18px rgba(var(--accent-rgb), 0.2);
+}
+.draft-tab.active span {
+  color: var(--button-text);
+}
+.draft-preview,
+.draft-history-item pre {
+  border: 1px solid rgba(var(--border-rgb), 0.36);
+  border-radius: calc(var(--radius) - 6px);
+  background: rgba(var(--bg-rgb), 0.38);
+  overflow: hidden;
+}
+.draft-preview-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  color: var(--muted);
+  border-bottom: 1px solid rgba(var(--border-rgb), 0.3);
+  font-size: calc(11.5px * var(--font-scale));
+}
+.draft-preview pre,
+.draft-history-item pre {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  padding: 10px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: calc(12.5px * var(--font-scale));
+  line-height: 1.55;
+}
+.draft-history {
+  margin-top: 12px;
+}
+.draft-history > summary,
+.draft-history-item > summary {
+  cursor: pointer;
+  user-select: none;
+}
+.draft-history-grid {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.draft-history-item {
+  border: 1px solid rgba(var(--border-rgb), 0.35);
+  border-radius: calc(var(--radius) - 6px);
+  padding: 8px;
+}
+.draft-history-item > summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text);
+  font-size: calc(12px * var(--font-scale));
+  font-weight: 800;
+}
+.draft-history-item em {
+  color: var(--muted);
+  font-style: normal;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
 .blueprint-status.error-state {
   border-color: #ff8989;
   background: rgba(255, 137, 137, 0.05);

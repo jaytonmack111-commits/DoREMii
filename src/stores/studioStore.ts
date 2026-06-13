@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { BlueprintResult, DurationMode, GenerationPollResult, GenerationTask, LyricsCraftResult, LyricsQualityReport, ModeType, PerformancePreset, SongIntent } from '../shared/types'
+import type { BlueprintResult, DurationMode, GenerationPollResult, GenerationTask, LyricsCraftResult, LyricsDraftSnapshot, LyricsQualityReport, ModeType, PerformancePreset, SongIntent, WriterProgressEvent } from '../shared/types'
 import { GENRES, MODE_LIBRARY, VIBES } from '../lib/constants'
 import { useAppStore } from './appStore'
 import { usePlayerStore } from './playerStore'
@@ -57,6 +57,9 @@ interface StudioStore {
   titleBusy: boolean
   writerStage: string | null
   blueprintNotes: string[]
+  blueprintStartedAt: number | null
+  writerStageStartedAt: number | null
+  blueprintDrafts: LyricsDraftSnapshot[]
   /** 'auto' = strongest installed Ollama model; 'engine' = ACE's small LM only. */
   writerModel: string
   writerModels: string[]
@@ -115,7 +118,7 @@ type StudioDraft = Partial<Pick<StudioStore,
   'durationMode' | 'durationMin' | 'durationMax' | 'duration' | 'performance' | 'variations' | 'bpm' | 'musicKey' |
   'seed' | 'negativePrompt' | 'pickedGenres' | 'pickedVibes' | 'pickedVocals' | 'pickedInstruments' | 'pickedDrums' |
   'pickedProduction' | 'pickedEras' | 'pickedCustomTags' | 'pickedStructure' | 'blueprint' | 'blueprintStatus' |
-  'lyricsCraft' | 'lyricsQuality' | 'activeTab' | 'energy' | 'vocalGender' | 'tempoFeel'
+  'lyricsCraft' | 'lyricsQuality' | 'blueprintNotes' | 'blueprintDrafts' | 'activeTab' | 'energy' | 'vocalGender' | 'tempoFeel'
 >>
 
 function loadStudioDraft(): StudioDraft {
@@ -161,6 +164,8 @@ function persistStudioDraft(s: StudioStore) {
       blueprintStatus: s.blueprintStatus === 'generating' ? 'idle' : s.blueprintStatus,
       lyricsCraft: s.lyricsCraft,
       lyricsQuality: s.lyricsQuality,
+      blueprintNotes: s.blueprintNotes,
+      blueprintDrafts: s.blueprintDrafts,
       activeTab: s.blueprintStatus === 'generating' ? 'idea' : s.activeTab,
       energy: s.energy,
       vocalGender: s.vocalGender,
@@ -185,6 +190,9 @@ function clearBlueprintState(): Partial<StudioStore> {
     lyricsRewriteBusy: false,
     writerStage: null,
     blueprintNotes: [],
+    blueprintStartedAt: null,
+    writerStageStartedAt: null,
+    blueprintDrafts: [],
   }
 }
 
@@ -240,6 +248,10 @@ function progressNote(stage: string) {
   if (/harmonizing/i.test(clean)) return 'Asking ACE to align caption, BPM, key, duration, and engine metadata.'
   if (/finalizing/i.test(clean)) return 'Running the final lyric quality gate and preparing the editable blueprint.'
   return clean
+}
+
+function normalizeWriterProgress(event: string | WriterProgressEvent): WriterProgressEvent {
+  return typeof event === 'string' ? { stage: event, note: progressNote(event) } : event
 }
 
 export function buildSongIntent(s: StudioStore): SongIntent {
@@ -349,7 +361,10 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
   enhanceWordsBusy: false,
   titleBusy: false,
   writerStage: null,
-  blueprintNotes: [],
+  blueprintNotes: draft.blueprintNotes ?? [],
+  blueprintStartedAt: null,
+  writerStageStartedAt: null,
+  blueprintDrafts: draft.blueprintDrafts ?? draft.lyricsCraft?.drafts ?? [],
   writerModel: localStorage.getItem('doremi.writer.model') || 'auto',
   writerModels: [],
   thinkingPower: Number(localStorage.getItem('doremi.thinking.power')) || 2,
@@ -567,7 +582,10 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
       lyricsQuality: null,
       lyricsQualityBusy: false,
       writerStage: 'planning',
-      blueprintNotes: ['Reading the idea, locking the topic, and mapping the verse path.'],
+      blueprintNotes: ['Building the song intent packet, topic lock, required structure, and production boundaries.'],
+      blueprintStartedAt: Date.now(),
+      writerStageStartedAt: Date.now(),
+      blueprintDrafts: [],
     })
     try {
       // ACE's LM plans the music (caption, BPM, key, duration). The words
@@ -618,12 +636,20 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
           })
         : Promise.resolve(null)
 
-      const offProgress = window.doReMi.onWriterProgress((stage) => {
+      const offProgress = window.doReMi.onWriterProgress((event) => {
         set((current) => {
-          const note = progressNote(stage)
+          const payload = normalizeWriterProgress(event)
+          const stage = payload.stage
+          const note = payload.note || progressNote(stage)
+          const stageChanged = stage !== current.writerStage
+          const draftAlreadySaved = payload.draft
+            ? current.blueprintDrafts.some((item) => item.id === payload.draft?.id)
+            : false
           return {
             writerStage: stage,
+            writerStageStartedAt: stageChanged ? Date.now() : current.writerStageStartedAt,
             blueprintNotes: current.blueprintNotes.includes(note) ? current.blueprintNotes : [...current.blueprintNotes, note].slice(-8),
+            blueprintDrafts: payload.draft && !draftAlreadySaved ? [...current.blueprintDrafts, payload.draft] : current.blueprintDrafts,
           }
         })
       })
@@ -647,6 +673,7 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
         const note = progressNote('harmonizing caption + metadata with the engine')
         set((current) => ({
           writerStage: 'harmonizing caption + metadata with the engine',
+          writerStageStartedAt: Date.now(),
           blueprintNotes: current.blueprintNotes.includes(note) ? current.blueprintNotes : [...current.blueprintNotes, note].slice(-8),
         }))
         const harmonized = await window.doReMi.formatInput({
@@ -677,6 +704,8 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
           ? `The lyric writer did not produce usable vocal lyrics, so DoReMii blocked the blueprint instead of falling back to instrumental output. Reason: ${writerFailure || 'unknown reason'}. Try Reroll, qwen3:14b, qwen3:8b, or write lyrics manually.`
           : null,
         writerStage: null,
+        writerStageStartedAt: null,
+        blueprintDrafts: craft?.drafts?.length ? craft.drafts : get().blueprintDrafts,
       })
       useUiStore.getState().toast(craft
         ? `Blueprint ready - lyrics written by ${craft.model}${engineReady ? ' with engine metadata' : ' while ACE warms'}`
@@ -693,7 +722,7 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      set({ blueprintStatus: 'error', blueprintError: message, writerStage: null })
+      set({ blueprintStatus: 'error', blueprintError: message, writerStage: null, writerStageStartedAt: null })
       useUiStore.getState().toast(`Blueprint failed: ${message}`)
     }
   },

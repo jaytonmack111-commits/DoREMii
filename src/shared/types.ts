@@ -98,10 +98,26 @@ export interface SongIntent {
 export interface LyricsCraftResult {
   lyrics: string
   draft: string
+  drafts?: LyricsDraftSnapshot[]
   critique: string
   quality: LyricsQualityReport
   model: string
   createdAt: string
+}
+
+export interface LyricsDraftSnapshot {
+  id: string
+  label: string
+  lyrics: string
+  note: string
+  createdAt: string
+  quality?: LyricsQualityReport | null
+}
+
+export interface WriterProgressEvent {
+  stage: string
+  note?: string
+  draft?: LyricsDraftSnapshot
 }
 
 export interface LyricsQualityReport {
@@ -357,5 +373,5 @@ export interface DoReMiApi {
   onRoomMessage: (handler: (message: RoomMessage) => void) => () => void
   onRoomAgents: (callback: (agents: RoomAgent[]) => void) => () => void
   onRoomTyping: (callback: (agent: RoomAgent | null) => void) => () => void
-  onWriterProgress: (callback: (stage: string) => void) => () => void
+  onWriterProgress: (callback: (event: WriterProgressEvent) => void) => () => void
 }

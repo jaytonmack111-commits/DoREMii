@@ -1,6 +1,6 @@
 import { BrowserWindow } from 'electron'
 import { spawn } from 'node:child_process'
-import type { LyricsCraftResult, LyricsQualityReport, SongIntent } from '../shared/types.js'
+import type { LyricsCraftResult, LyricsDraftSnapshot, LyricsQualityReport, SongIntent, WriterProgressEvent } from '../shared/types.js'
 import { getEngineSettings } from './modelSettings.js'
 
 const OLLAMA_URL = 'http://127.0.0.1:11434'
@@ -42,6 +42,10 @@ ACE FORMAT RULES (follow exactly):
 - Section tags in square brackets on their own line: [Intro], [Verse 1], [Pre-Chorus], [Chorus], [Bridge], [Final Chorus], [Outro]. Blank line between sections.
 - Follow the STRUCTURE PLAN given in the brief exactly - those sections, that order, roughly those line counts. Do not add or skip sections.
 - 6-10 syllables per sung line, and lines in the same position of a section should match within 1-2 syllables (the model aligns syllables to beats).
+- Think in 4-bar phrases. Most verse sections should be 4, 6, or 8 sung lines; choruses should feel like 4 strong bars plus a hook return. If you break the square pattern, do it once for tension, then resolve it.
+- Rhyme with craft, not nursery-rhyme obviousness. Prefer slant rhyme, internal rhyme, vowel echo, and rhythmic callbacks. Avoid every line ending in a perfect AABB jingle unless the user asks for a children's song.
+- Let the strongest rhyme or repeated hook land at the end of a bar/line. Do not force awkward word order just to rhyme.
+- Avoid preschool couplets and generic poetic padding. Lines should sound singable when spoken over a beat, not like caption prose.
 - You MAY use ACE performance tags on their own line inside sections: [Guitar Solo], [Instrumental], [Build], [Drop], [Breakdown], or a vocal hint joined to a section tag like [Chorus - anthemic]. Use at most 2-3 of these in the whole song, matching the musical style.
 - Parentheses inside a sung line mean backing vocals: "We rise together (together)". Use sparingly.
 - UPPERCASE words mean shouted/intense delivery: use only at true peaks.
@@ -75,7 +79,10 @@ Check:
 - section structure
 - screenplay/stage-direction contamination
 - line length and mouth feel
-- rhyme or purposeful slant rhyme
+- approximate syllable balance inside each section
+- 4-bar phrase feel: verses/choruses should mostly group into 4, 6, or 8 lines
+- rhyme or purposeful slant rhyme, internal rhyme, vowel echo, and hook callbacks
+- nursery-rhyme/jingle patterns that feel too childish for the requested genre
 - chorus hook strength
 - repetition problems
 Return concise bullet fixes and exactly one final line: VERDICT: PASS or VERDICT: REJECT.`
@@ -210,11 +217,11 @@ async function chat(model: string, messages: ChatMessage[], temperature: number,
   return { text, thinkBlock }
 }
 
-export function emitWriterProgress(stage: string) {
+export function emitWriterProgress(progress: string | WriterProgressEvent) {
   if (!BrowserWindow?.getAllWindows) return
   const wins = BrowserWindow.getAllWindows()
   if (wins.length > 0) {
-    wins[0].webContents.send('writer:progress', stage)
+    wins[0].webContents.send('writer:progress', typeof progress === 'string' ? { stage: progress } : progress)
   }
 }
 
@@ -228,6 +235,45 @@ function sanitizeLyrics(text: string) {
     .replace(/^\s*#+\s*/gm, '')                    // markdown headers
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+}
+
+const LYRIC_SECTION_RE = /^\s*\[(?:intro|verse(?:\s*\d+)?|pre-chorus|chorus|hook|bridge|final chorus|outro|drop|breakdown|instrumental|build)[^\]]*\]\s*$/i
+const NON_LYRIC_LINE_RE = /^(?:okay|first,|but wait|now,|alternatively|maybe|for the outro|rhyme\/flow|adherence|score:|verdict:|notes:|critic|local validator|rewrite instruction|requirements?:|the user|looking at|let's|i need|i should|return only|these lines|that'?s|this means)\b/i
+
+function extractLyricsOnly(raw: string) {
+  const clean = sanitizeLyrics(stripLeakedReasoning(raw))
+  const lines = clean.split(/\r?\n/)
+  const start = lines.findIndex((line) => LYRIC_SECTION_RE.test(line))
+  if (start === -1) return ''
+
+  const kept: string[] = []
+  for (const line of lines.slice(start)) {
+    const trimmed = line.trim()
+    if (trimmed && NON_LYRIC_LINE_RE.test(trimmed)) break
+    if (/^\s*[-*]\s*(?:the|this|try|maybe|fix|replace|adjust)\b/i.test(trimmed)) break
+    kept.push(line.replace(/\s+\([A-Z]\)\s*$/i, ''))
+  }
+
+  const extracted = sanitizeLyrics(kept.join('\n'))
+  return sungLinesBySection(extracted).untagged?.length ? '' : extracted
+}
+
+function progressSummary(text: string, max = 260) {
+  return sanitizeLyrics(stripLeakedReasoning(text))
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max)
+}
+
+function makeDraftSnapshot(label: string, lyrics: string, note: string, intent?: SongIntent, idea?: string): LyricsDraftSnapshot {
+  return {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    label,
+    lyrics,
+    note,
+    createdAt: new Date().toISOString(),
+    quality: buildQualityReport(lyrics, null, intent, idea),
+  }
 }
 
 function sungLinesBySection(lyrics: string) {
@@ -573,7 +619,7 @@ export async function rewriteLyrics(input: { lyrics: string; idea?: string; inst
   const clean = sanitizeLyrics(input.lyrics)
   if (!clean) throw new Error('No lyrics to rewrite')
   const startingQuality = buildQualityReport(clean, null, input.intent, input.idea)
-  emitWriterProgress('rewrite')
+  emitWriterProgress({ stage: 'rewrite', note: 'Rebuilding the lyrics from the current quality issues and the song intent packet.' })
   const rewriteRes = await chat(model, [
     { role: 'system', content: SONGWRITER_SYSTEM },
     {
@@ -587,8 +633,13 @@ export async function rewriteLyrics(input: { lyrics: string; idea?: string; inst
       ].filter(Boolean).join('\n\n'),
     },
   ], 0.75, true, 'lyrics-rewrite')
-  const rewritten = sanitizeLyrics(rewriteRes.text)
-  emitWriterProgress('self-critique')
+  const rewritten = extractLyricsOnly(rewriteRes.text)
+  if (!rewritten) {
+    throw new Error('The rewrite returned critique notes instead of tagged lyrics. Try again or switch writer models.')
+  }
+  const draftSnapshot = makeDraftSnapshot('Rewrite draft', rewritten, 'Fresh rewrite from the requested fix.', input.intent, input.idea)
+  emitWriterProgress({ stage: 'rewrite', note: 'Rewrite draft is ready for a fresh critique.', draft: draftSnapshot })
+  emitWriterProgress({ stage: 'self-critique', note: 'Checking the rewrite for structure, singability, prompt match, and off-topic drift.' })
   const critiqueRes = await chat(model, [
     { role: 'system', content: RHYME_FLOW_SYSTEM },
     { role: 'user', content: `${buildIntentBrief(input.intent, input.idea)}\n\nCheck these rewritten lyrics:\n${rewritten}` },
@@ -599,10 +650,11 @@ export async function rewriteLyrics(input: { lyrics: string; idea?: string; inst
     adherence ? `ADHERENCE CHECK:\nSCORE: ${adherence.score}\nVERDICT: ${adherence.verdict}\nNOTES:\n${adherence.notes.map((note) => `- ${note}`).join('\n')}` : null,
   ].filter(Boolean).join('\n\n')
   const quality = buildQualityReport(rewritten, critique, input.intent, input.idea, adherence)
-  emitWriterProgress('finalizing')
+  emitWriterProgress({ stage: 'finalizing', note: 'Packaging the clean rewrite with its quality report.' })
   return {
     lyrics: rewritten,
     draft: clean,
+    drafts: [draftSnapshot],
     critique,
     quality,
     model,
@@ -1103,7 +1155,7 @@ export async function craftLyrics(input: {
   const picked = await pickResponsiveWriter(input.model)
   const model = picked.model
   if (picked.demotedFrom) {
-    emitWriterProgress(`(${picked.demotedFrom} is starved for VRAM - using ${model} instead)`)
+    emitWriterProgress({ stage: 'planning', note: `${picked.demotedFrom} is starved for VRAM, so the writer is using ${model} instead.` })
   }
 
   const plan = structurePlanFor(input.intent)
@@ -1123,20 +1175,28 @@ export async function craftLyrics(input: {
   ].filter(Boolean).join('\n\n')
 
   // Pass 0 - invent the concrete story so the draft can't be generic.
-  emitWriterProgress('planning')
+  const drafts: LyricsDraftSnapshot[] = []
+  emitWriterProgress({ stage: 'planning', note: 'Building the song intent packet, topic lock, required structure, and production boundaries.' })
   const sceneRes = await chat(model, [
     { role: 'system', content: SCENE_SYSTEM },
     { role: 'user', content: brief },
   ], 0.85, true, 'scene')
   const scene = sceneRes.text || sceneRes.thinkBlock || brief
+  emitWriterProgress({ stage: 'planning', note: `Song worksheet: ${progressSummary(scene)}` })
 
   // Pass 1 - draft, with deliberate thinking.
-  emitWriterProgress('drafting')
+  emitWriterProgress({ stage: 'drafting', note: 'Writing Draft 1 as tagged, singable lyrics from the worksheet.' })
   const draftRes = await chat(model, [
     { role: 'system', content: SONGWRITER_SYSTEM },
     { role: 'user', content: `${brief}\n\nYour story worksheet (use this material - it is the song's world):\n${scene}` },
   ], 0.9, true, 'draft')
-  const draft = draftRes.text
+  const draft = extractLyricsOnly(draftRes.text)
+  if (!draft) {
+    throw new Error('The writer returned planning or critique text instead of tagged lyrics. DoReMii blocked it so it does not become a bad blueprint.')
+  }
+  const draftOne = makeDraftSnapshot('Draft 1', draft, 'First complete lyric draft from the song worksheet.', input.intent, input.idea)
+  drafts.push(draftOne)
+  emitWriterProgress({ stage: 'drafting', note: 'Draft 1 is ready. The critic is checking topic match, rhyme, structure, and singability next.', draft: draftOne })
 
   // Passes 2..n - critic loop: critique, rewrite, re-critique. Keep this tight
   // for Blueprint UX; deeper "let it cook" passes belong behind a Pro control.
@@ -1145,7 +1205,7 @@ export async function craftLyrics(input: {
   let validationIssues = validateLyrics(current, input.intent, input.idea)
   const maxRewriteRounds = /qwen3:4b/i.test(model) ? 1 : 2
   for (let round = 0; round < maxRewriteRounds; round += 1) {
-    emitWriterProgress('self-critique')
+    emitWriterProgress({ stage: 'self-critique', note: `Critiquing ${drafts[drafts.length - 1]?.label ?? 'the current draft'} against the prompt, structure, and flow rules.` })
     const critiqueRes = await chat(model, [
       { role: 'system', content: CRITIC_SYSTEM },
       { role: 'user', content: `The song brief was:\n${brief}\n\nLocal validator issues that are automatic rejects:\n${validationIssues.length ? validationIssues.map((issue) => `- ${issue}`).join('\n') : '- none'}\n\nThe lyrics to critique:\n${current}` },
@@ -1168,7 +1228,7 @@ export async function craftLyrics(input: {
       && validateLyrics(current, input.intent, input.idea).length === 0
     if (passed) break
 
-    emitWriterProgress('rewrite')
+    emitWriterProgress({ stage: 'rewrite', note: 'The draft did not clear every gate, so the writer is rebuilding weak sections instead of appending notes.' })
     validationIssues = validateLyrics(current, input.intent, input.idea)
     const rewriteRes = await chat(model, [
       { role: 'system', content: SONGWRITER_SYSTEM },
@@ -1176,11 +1236,19 @@ export async function craftLyrics(input: {
       { role: 'assistant', content: current },
       { role: 'user', content: `A professional critic and local validator reviewed your lyrics.\n\nCritic review:\n${critique}\n\nLocal validator rejects:\n${validationIssues.length ? validationIssues.map((issue) => `- ${issue}`).join('\n') : '- none'}\n\nRewrite from scratch if needed. Requirements:\n- Output ONLY sung lyrics with section tags.\n- ${plan.text.replace(/\n/g, '\n- ')}\n- Keep every verse and hook anchored to the topic lock in the song intent packet.\n- One core metaphor for the whole song; no adjective-stacking.\n- 6-10 syllables per line, consistent within each section.\n- No screenplay, no phone/camera/crowd descriptions - every non-tag line is sung.\n- Strong hook in the chorus; do not repeat verses verbatim.\n\nReturn only the revised lyrics.` },
     ], 0.85, true, `rewrite-${round + 1}`)
-    current = sanitizeLyrics(rewriteRes.text)
+    const rewritten = extractLyricsOnly(rewriteRes.text)
+    if (!rewritten) {
+      emitWriterProgress({ stage: 'rewrite', note: 'The rewrite returned notes instead of tagged lyrics, so DoReMii kept the previous draft and will not treat notes as lyrics.' })
+      break
+    }
+    current = rewritten
     validationIssues = validateLyrics(current, input.intent, input.idea)
+    const snapshot = makeDraftSnapshot(`Draft ${drafts.length + 1}`, current, `Rewrite round ${round + 1} after critic and flow checks.`, input.intent, input.idea)
+    drafts.push(snapshot)
+    emitWriterProgress({ stage: 'rewrite', note: `${snapshot.label} is ready. Comparing it against the previous draft and running a fresh quality gate.`, draft: snapshot })
   }
 
-  emitWriterProgress('finalizing')
+  emitWriterProgress({ stage: 'finalizing', note: 'Running the final critic, rhyme/flow check, prompt-adherence check, and quality score.' })
   const finalIssues = validateLyrics(current, input.intent, input.idea)
   const finalCritiqueRes = await chat(model, [
     { role: 'system', content: CRITIC_SYSTEM },
@@ -1209,6 +1277,7 @@ export async function craftLyrics(input: {
   return {
     lyrics: sanitizeLyrics(current),
     draft: sanitizeLyrics(draft),
+    drafts,
     critique,
     quality,
     model,
