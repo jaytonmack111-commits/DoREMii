@@ -430,7 +430,7 @@ h1, h2, h3, p { margin: 0; }
    the right. Both fill the tab height; the tag library scrolls internally so
    it can never stretch the page off-screen again. */
 .idea-tab {
-  height: 100%; min-height: 0;
+  min-height: 0; align-content: start;
   display: grid; grid-template-columns: minmax(0, 1fr) minmax(212px, 236px); gap: 18px;
   padding-right: 18px;
 }
@@ -454,7 +454,7 @@ div.instrumental-note.idea-area { display: flex; align-items: center; gap: 10px;
 .foot-right .hint { text-align: right; }
 
 .tag-column {
-  align-self: start; min-height: 0; max-height: clamp(320px, 52vh, 460px);
+  align-self: stretch; min-height: 0;
   display: flex; flex-direction: column; gap: 9px;
   padding: 11px;
   border-radius: calc(var(--radius) * 0.7);

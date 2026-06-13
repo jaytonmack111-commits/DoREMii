@@ -1053,14 +1053,14 @@ export async function craftLyrics(input: {
     finalAdherence ? `ADHERENCE CHECK:\nSCORE: ${finalAdherence.score}\nVERDICT: ${finalAdherence.verdict}\nNOTES:\n${finalAdherence.notes.map((note) => `- ${note}`).join('\n')}` : null,
   ].filter(Boolean).join('\n\n')
   const quality = buildQualityReport(current, critique, input.intent, input.idea, finalAdherence)
-  if (finalIssues.length) {
-    throw new Error(`Lyrics failed quality gate: ${finalIssues.join(' ')}`)
-  }
-  if (finalAdherence?.verdict === 'fail') {
-    throw new Error(`Lyrics failed prompt-adherence gate: ${finalAdherence.notes.join(' ')}`)
-  }
-  if (!/VERDICT:\s*PASS/i.test(critique)) {
-    throw new Error(`Lyrics failed critic/rhyme gate: ${critique.replace(/\s+/g, ' ').slice(0, 700)}`)
+  // The pipeline already drafted, critiqued, and rewrote up to 3 times. We NEVER
+  // hard-block here: a small local model rarely emits a literal "VERDICT: PASS"
+  // even for solid lyrics, and blocking left the user unable to generate at all.
+  // Instead we always return the best attempt plus its quality report, and the
+  // UI surfaces the score + one-click Fix Issues so the user is the final judge.
+  // The only true failure is producing no usable lyric text at all.
+  if (!sanitizeLyrics(current).trim()) {
+    throw new Error('The writer returned no usable lyrics. Try Reroll or a different writer model.')
   }
   return {
     lyrics: sanitizeLyrics(current),
