@@ -199,10 +199,12 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
   creationMode: 'simple',
   language: 'en',
   styleStrength: 60,
-  durationMode: 'song',
-  durationMin: 200,
+  // Default to Auto so Simple mode fine-tunes length itself; the user can
+  // still switch to Sample/Loop/Song and set a manual range.
+  durationMode: 'auto',
+  durationMin: 180,
   durationMax: 240,
-  duration: 220,
+  duration: 210,
   performance: 'balanced',
   variations: 2,
   bpm: '',
