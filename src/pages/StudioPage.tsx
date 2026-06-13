@@ -6,11 +6,9 @@ import { Cover } from '../components/ui/Cover'
 import { LANGUAGES, MODE_LIBRARY, PRESET_PACKS, STRUCTURE, TAG_CATEGORIES, VOCALS, WORKSHOP_TOOLS } from '../lib/constants'
 import { useAppStore } from '../stores/appStore'
 import { usePlayerStore } from '../stores/playerStore'
-import { isEditingMode, useStudioStore, type DetailTier } from '../stores/studioStore'
+import { isEditingMode, useStudioStore, type DetailTier, type QueueKind, type StudioTab } from '../stores/studioStore'
 import { useUiStore } from '../stores/uiStore'
 import type { DurationMode, PerformancePreset } from '../shared/types'
-
-type StudioTab = 'idea' | 'blueprint' | 'setup'
 
 const TIERS: { id: DetailTier; label: string }[] = [
   { id: 'simple', label: 'Simple' },
@@ -59,15 +57,26 @@ export function StudioPage() {
     seed, negativePrompt, songTitle, pickedGenres, pickedVibes, pickedVocals, pickedInstruments,
     pickedDrums, pickedProduction, pickedEras, pickedCustomTags, pickedStructure, tagFilter,
     customTagInput, blueprint, blueprintStatus, blueprintError, lyricsCraft, lyricsQuality, lyricsQualityBusy, lyricsRewriteBusy, writerStage,
-    enhanceStyleBusy, enhanceWordsBusy, titleBusy, conceptBusy,
+    titleBusy, conceptBusy,
     thinkingPower, energy, vocalGender, tempoFeel, guidanceScale, inferenceSteps, lmTemperature, lmTopP, repetitionPenalty, constrainedDecoding,
-    writerModel, writerModels, tasks, generating, set, toggleIn, setWriterModel, loadWriterModels,
-    addCustomTag, applyPack, randomIdea, enhanceStyle, enhanceWords, suggestSongTitle, generateBlueprint, patchBlueprint, analyzeBlueprintLyrics, rewriteBlueprintLyrics,
+    writerModel, writerModels, tasks, generating, activeTab, actionQueue, runningAction,
+    set, setActiveTab, queueAction, toggleIn, setWriterModel, loadWriterModels,
+    addCustomTag, applyPack, randomIdea, suggestSongTitle, patchBlueprint, analyzeBlueprintLyrics, rewriteBlueprintLyrics,
     acceptBlueprint, rejectBlueprint, resetBlueprint, submitGeneration,
   } = studio
 
-  const [activeTab, setActiveTab] = useState<StudioTab>('idea')
   const [expandedTags, setExpandedTags] = useState<Set<string>>(new Set())
+
+  // Queue-aware button helpers: a kind can be idle, queued (with position), or
+  // running. Clicking a queued kind cancels it.
+  function actionLabel(kind: QueueKind, idle: string, busy: string) {
+    if (runningAction === kind) return busy
+    const pos = actionQueue.indexOf(kind)
+    return pos >= 0 ? `Queued #${pos + 1} · cancel` : idle
+  }
+  function actionClass(kind: QueueKind, base: string) {
+    return `${base}${actionQueue.includes(kind) ? ' queued' : ''}${runningAction === kind ? ' running' : ''}`
+  }
 
   useEffect(() => { void loadWriterModels() }, [loadWriterModels])
   // Instrumental songs have no Blueprint tab; fall back to Idea without forcing
@@ -223,8 +232,8 @@ export function StudioPage() {
                   )}
                   {lyricsTab !== 'instrumental' && (
                     <div className="area-foot">
-                      <button className="mini-action accent" onClick={() => void enhanceWords()} disabled={enhanceWordsBusy}>
-                        <Wand2 size={14} /> {enhanceWordsBusy ? 'Enhancing...' : lyricsTab === 'write' ? 'Enhance Lyrics' : 'Enhance Idea'}
+                      <button className={actionClass('enhanceWords', 'mini-action accent')} onClick={() => queueAction('enhanceWords')}>
+                        <Wand2 size={14} /> {actionLabel('enhanceWords', lyricsTab === 'write' ? 'Enhance Lyrics' : 'Enhance Idea', 'Enhancing...')}
                       </button>
                       <span className="counter">{(lyricsTab === 'write' ? lyrics : songIdea).length} chars</span>
                     </div>
@@ -248,8 +257,8 @@ export function StudioPage() {
                     placeholder="Describe the sound in your own words - genre, mood, instruments, era, energy..."
                   />
                   <div className="area-foot">
-                    <button className="mini-action accent" onClick={() => void enhanceStyle()} disabled={enhanceStyleBusy}>
-                      <Wand2 size={14} /> {enhanceStyleBusy ? 'Enhancing...' : 'Enhance Style'}
+                    <button className={actionClass('enhanceStyle', 'mini-action accent')} onClick={() => queueAction('enhanceStyle')}>
+                      <Wand2 size={14} /> {actionLabel('enhanceStyle', 'Enhance Style', 'Enhancing...')}
                     </button>
                     <div className="foot-right">
                       <span className="hint">The AI maps your words to engine tags</span>
@@ -340,9 +349,9 @@ export function StudioPage() {
                     <option value="engine">ACE engine LM — fast, basic</option>
                   </select>
                 </label>
-                <button className="mini-action accent" onClick={() => void generateBlueprint()} disabled={!engineReady || blueprintStatus === 'generating'}>
+                <button className={actionClass('generateBlueprint', 'mini-action accent')} onClick={() => queueAction('generateBlueprint')} disabled={!engineReady && !actionQueue.includes('generateBlueprint')}>
                   <Wand2 size={14} />
-                  {blueprintStatus === 'generating' ? 'Generating...' : blueprint ? 'Regenerate' : 'Generate Blueprint'}
+                  {actionLabel('generateBlueprint', blueprint ? 'Regenerate' : 'Generate Blueprint', 'Generating...')}
                 </button>
               </div>
             </div>
@@ -351,7 +360,7 @@ export function StudioPage() {
               status={blueprintStatus}
               error={blueprintError}
               writerStage={writerStage}
-              onRetry={() => void generateBlueprint()}
+              onRetry={() => queueAction('generateBlueprint')}
               onCancel={resetBlueprint}
             />
 
@@ -395,7 +404,7 @@ export function StudioPage() {
                   <button className="mini-action" onClick={() => void analyzeBlueprintLyrics()} disabled={lyricsQualityBusy || !blueprint.lyrics.trim()}>
                     <ListChecks size={14} /> {lyricsQualityBusy ? 'Checking...' : 'Check Lyrics'}
                   </button>
-                  <button className="mini-action" onClick={() => void generateBlueprint()}><RefreshCw size={14} /> Reroll</button>
+                  <button className="mini-action" onClick={() => queueAction('generateBlueprint')}><RefreshCw size={14} /> Reroll</button>
                   <button className="mini-action danger" onClick={rejectBlueprint}><X size={14} /> Discard</button>
                   {showPro && (
                     <button className="writers-room-cta" onClick={() => void useRoomStore.getState().openRoom()}>
@@ -712,11 +721,11 @@ export function StudioPage() {
               </select>
             </label>
             <button
-              className="generate-cta compact"
-              onClick={() => { setActiveTab('blueprint'); void generateBlueprint() }}
-              disabled={!engineReady || blueprintStatus === 'generating'}
+              className={actionClass('generateBlueprint', 'generate-cta compact')}
+              onClick={() => queueAction('generateBlueprint')}
+              disabled={!engineReady && !actionQueue.includes('generateBlueprint')}
             >
-              <Wand2 size={18} /> {blueprintStatus === 'generating' ? 'Generating...' : 'Generate Blueprint'}
+              <Wand2 size={18} /> {actionLabel('generateBlueprint', 'Generate Blueprint', 'Generating...')}
             </button>
           </>
         ) : (

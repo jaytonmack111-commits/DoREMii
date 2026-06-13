@@ -9,6 +9,9 @@ export type VocalMode = 'vocals' | 'instrumental'
 export type LyricsTab = 'write' | 'prompt' | 'instrumental'
 /** How much of the studio is exposed: quick one-box flow, the standard set, or everything. */
 export type DetailTier = 'simple' | 'advanced' | 'pro'
+export type StudioTab = 'idea' | 'blueprint' | 'setup'
+/** AI actions that share the local writer and must run one at a time. */
+export type QueueKind = 'enhanceWords' | 'enhanceStyle' | 'generateBlueprint'
 
 interface StudioStore {
   tier: DetailTier
@@ -70,10 +73,19 @@ interface StudioStore {
   repetitionPenalty: number
   constrainedDecoding: boolean
   conceptBusy: boolean
+  // Which Studio tab is active (in the store so the action queue can navigate).
+  activeTab: StudioTab
+  // AI actions waiting to run, in order. Only one runs at a time so they don't
+  // fight over the writer. Re-queuing a pending kind cancels it.
+  actionQueue: QueueKind[]
+  runningAction: QueueKind | null
   tasks: GenerationTask[]
   generating: boolean
 
   set: (patch: Partial<StudioStore>) => void
+  setActiveTab: (tab: StudioTab) => void
+  queueAction: (kind: QueueKind) => void
+  processQueue: () => Promise<void>
   setWriterModel: (model: string) => void
   loadWriterModels: () => Promise<void>
   toggleIn: (key: 'pickedGenres' | 'pickedVibes' | 'pickedVocals' | 'pickedInstruments' | 'pickedDrums' | 'pickedProduction' | 'pickedEras' | 'pickedCustomTags' | 'pickedStructure', value: string) => void
@@ -271,6 +283,9 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
   repetitionPenalty: 1.15,
   constrainedDecoding: true,
   conceptBusy: false,
+  activeTab: 'idea',
+  actionQueue: [],
+  runningAction: null,
   tasks: [],
   generating: false,
 
@@ -291,6 +306,36 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
     }
     return next
   }),
+  setActiveTab: (tab) => set({ activeTab: tab }),
+  /** Click an AI button: run it now if nothing is busy, otherwise queue it.
+   *  Clicking a kind that is already queued (but not yet running) cancels it. */
+  queueAction: (kind) => {
+    const s = get()
+    if (s.runningAction === kind) return // can't cancel a job that's already running
+    if (s.actionQueue.includes(kind)) {
+      set({ actionQueue: s.actionQueue.filter((k) => k !== kind) })
+      return
+    }
+    set({ actionQueue: [...s.actionQueue, kind] })
+    void get().processQueue()
+  },
+  processQueue: async () => {
+    if (get().runningAction) return
+    const next = get().actionQueue[0]
+    if (!next) return
+    set({ actionQueue: get().actionQueue.slice(1), runningAction: next })
+    try {
+      if (next === 'enhanceWords') await get().enhanceWords()
+      else if (next === 'enhanceStyle') await get().enhanceStyle()
+      else {
+        set({ activeTab: 'blueprint' })
+        await get().generateBlueprint()
+      }
+    } finally {
+      set({ runningAction: null })
+      void get().processQueue()
+    }
+  },
   setWriterModel: (model) => {
     try { localStorage.setItem('doremi.writer.model', model) } catch { /* ignore */ }
     set({ writerModel: model })
