@@ -665,6 +665,27 @@ function stripReasoning(raw: string): string {
   return text.trim()
 }
 
+/** Safety net for when a small model reasons in PLAIN content (no <think> tags)
+ *  and trails its final answer after cues like "Final answer:" / "we'll write:".
+ *  If we detect a long reasoning monologue, keep only the text after the last
+ *  such cue; otherwise return the text unchanged. */
+function stripLeakedReasoning(raw: string): string {
+  const text = raw.trim()
+  const reasoningCues = /\b(we are given|the task is|let me|we must|we need to|option:|i think|let's|we can say|the user (says|wants|specified))\b/i
+  if (text.length < 400 || !reasoningCues.test(text)) return text
+  const finalCue = /(?:final (?:answer|version|decision)|we'?ll write|so,? final|here'?s the (?:final|rewrite)|revised)[:\s-]*/gi
+  let lastIdx = -1
+  let m: RegExpExecArray | null
+  while ((m = finalCue.exec(text)) !== null) lastIdx = m.index + m[0].length
+  if (lastIdx >= 0) {
+    const tail = text.slice(lastIdx).trim()
+    if (tail.length > 20) return tail
+  }
+  // No clear marker - take the last non-empty paragraph as the likely answer.
+  const paras = text.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean)
+  return paras.length ? paras[paras.length - 1] : text
+}
+
 /** Clean single-shot completion that AVOIDS the FINAL_MARKER hack entirely.
  *  The marker hack (used by the lyric pipeline to suppress qwen3 thinking)
  *  confused the model into reasoning ABOUT the marker and leaking that
@@ -733,11 +754,15 @@ export async function enhanceText(input: { kind: 'style' | 'idea' | 'lyrics'; te
     throw new Error(`Enhance needs the local writer (Ollama): ${why}`)
   }
   const tagLine = input.tags?.length ? `\n\nSelected style tags to respect: ${input.tags.join(', ')}` : ''
+  // think:true is REQUIRED for reliability: with thinking suppressed, qwen3
+  // small models reason in plain content (no <think> tags) and dump the whole
+  // monologue into the box. think:true routes reasoning to its own channel so
+  // message.content is just the clean rewrite.
   const improved = await ollamaComplete(model, ENHANCE_PROMPTS[input.kind], `${text}${tagLine}`, {
-    think: input.think ?? false,
+    think: true,
     temperature: 0.7,
   })
-  const cleaned = improved.replace(/^["'“]+|["'”]+$/g, '').trim()
+  const cleaned = stripLeakedReasoning(improved).replace(/^["'“]+|["'”]+$/g, '').trim()
   if (!cleaned) throw new Error('The writer returned nothing - try again or raise thinking power.')
   return cleaned
 }
@@ -764,9 +789,11 @@ export async function suggestTitle(input: { lyrics: string; idea?: string; model
       model,
       'You name songs. Read the lyrics and reply with ONE evocative title, 1-5 words, Title Case. No quotes, no punctuation at the end, no explanation - just the title.',
       `${input.idea ? `Song concept: ${input.idea}\n\n` : ''}Lyrics:\n${input.lyrics.slice(0, 2400)}`,
-      { think: false, temperature: 0.8 },
+      { think: true, temperature: 0.8 },
     )
-    const title = text.split(/\r?\n/)[0].replace(/^["'“]+|["'”]+$/g, '').replace(/[.!?]+$/, '').trim()
+    const clean = stripLeakedReasoning(text)
+    const lastLine = clean.split(/\r?\n/).filter(Boolean).pop() ?? ''
+    const title = lastLine.replace(/^["'“]+|["'”]+$/g, '').replace(/[.!?]+$/, '').trim()
     if (title && title.length <= 60 && !/^(title|song)\b[:\s]/i.test(title)) return title
     return fallbackTitle(input.lyrics, input.idea)
   } catch {
@@ -797,18 +824,19 @@ export async function generateConcept(input?: { think?: boolean; model?: string 
     const seedTheme = RANDOM_THEMES[Math.floor(Math.random() * RANDOM_THEMES.length)]
     const raw = await ollamaComplete(
       model,
-      `You are a music concept generator. Invent ONE original, evocative song concept. Reply as STRICT JSON on a single line and nothing else:
-{"title":"a short evocative title","idea":"1-2 sentences about MEANING: the subject, the emotional angle, the story, the one core image","style":"1-2 sentences about SOUND only: genre, key instruments, tempo feel, vocal character, era, production texture"}
-The "idea" and "style" must be clearly DIFFERENT - one is what the song is about, the other is how it sounds. Be specific and surprising, never generic.`,
-      `Use this as loose inspiration (reinterpret freely, don't copy): theme "${seedTheme}", a flavour of ${seedGenre}. Generate the concept now.`,
-      { think: input?.think ?? false, temperature: 1.05 },
+      `You are a hit-making music concept generator. Invent ONE original, specific, emotionally gripping song concept. Reply as STRICT JSON on a single line, nothing before or after:
+{"title":"a short evocative title (2-5 words)","idea":"3-4 sentences telling the ACTUAL STORY: name a specific character or narrator, a specific place and moment, what literally happens, the emotional turn, and the one concrete image the song centers on. Do NOT write vague meta like 'find the moment it turns' - actually describe the moment.","style":"2-3 sentences of concrete production detail: genre and subgenre, 2-3 specific instruments, the drum/rhythm feel, tempo in words, vocal character, era, and one production texture (e.g. tape warmth, cavernous reverb, gritty lo-fi)."}
+The "idea" is the STORY (who, where, what happens); the "style" is the SOUND. They must be clearly different. Be vivid, concrete, and surprising - never generic filler.`,
+      `Loose inspiration to reinterpret freely (don't copy literally): theme "${seedTheme}", a flavour of ${seedGenre}. Write the full concept now with a real story and rich production detail.`,
+      { think: true, temperature: 1.05 },
     )
-    const match = raw.match(/\{[\s\S]*\}/)
+    const cleaned = stripLeakedReasoning(raw)
+    const match = cleaned.match(/\{[\s\S]*\}/)
     if (match) {
       const parsed = JSON.parse(match[0]) as { title?: string; idea?: string; style?: string }
       const idea = (parsed.idea || '').trim()
       const style = (parsed.style || '').trim()
-      if (idea && style) return { title: (parsed.title || '').trim(), idea, style }
+      if (idea.length > 40 && style.length > 30) return { title: (parsed.title || '').trim(), idea, style }
     }
     return fallback()
   } catch {

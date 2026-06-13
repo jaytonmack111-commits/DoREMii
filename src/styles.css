@@ -454,7 +454,11 @@ div.instrumental-note.idea-area { display: flex; align-items: center; gap: 10px;
 .foot-right .hint { text-align: right; }
 
 .tag-column {
-  align-self: stretch; min-height: 0;
+  /* Cap to roughly the left column height (chrome above the boxes + box height)
+     so the tag list never grows the row taller than the Idea/Style boxes. The
+     list scrolls internally past that. */
+  align-self: start; min-height: 0;
+  max-height: calc(190px + clamp(200px, 32vh, 340px));
   display: flex; flex-direction: column; gap: 9px;
   padding: 11px;
   border-radius: calc(var(--radius) * 0.7);
