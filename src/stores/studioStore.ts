@@ -56,6 +56,7 @@ interface StudioStore {
   enhanceWordsBusy: boolean
   titleBusy: boolean
   writerStage: string | null
+  blueprintNotes: string[]
   /** 'auto' = strongest installed Ollama model; 'engine' = ACE's small LM only. */
   writerModel: string
   writerModels: string[]
@@ -103,10 +104,75 @@ interface StudioStore {
   acceptBlueprint: () => void
   rejectBlueprint: () => void
   resetBlueprint: () => void
+  resetStudio: () => void
   submitGeneration: () => Promise<void>
 }
 
 const pollTimers: Record<string, number> = {}
+const STUDIO_DRAFT_KEY = 'doremi.studio.draft.v1'
+type StudioDraft = Partial<Pick<StudioStore,
+  'songTitle' | 'styleText' | 'songIdea' | 'lyrics' | 'lyricsTab' | 'vocalMode' | 'creationMode' | 'language' |
+  'durationMode' | 'durationMin' | 'durationMax' | 'duration' | 'performance' | 'variations' | 'bpm' | 'musicKey' |
+  'seed' | 'negativePrompt' | 'pickedGenres' | 'pickedVibes' | 'pickedVocals' | 'pickedInstruments' | 'pickedDrums' |
+  'pickedProduction' | 'pickedEras' | 'pickedCustomTags' | 'pickedStructure' | 'blueprint' | 'blueprintStatus' |
+  'lyricsCraft' | 'lyricsQuality' | 'activeTab' | 'energy' | 'vocalGender' | 'tempoFeel'
+>>
+
+function loadStudioDraft(): StudioDraft {
+  try {
+    const raw = localStorage.getItem(STUDIO_DRAFT_KEY)
+    return raw ? JSON.parse(raw) as StudioDraft : {}
+  } catch {
+    return {}
+  }
+}
+
+function persistStudioDraft(s: StudioStore) {
+  try {
+    const draft: StudioDraft = {
+      songTitle: s.songTitle,
+      styleText: s.styleText,
+      songIdea: s.songIdea,
+      lyrics: s.lyrics,
+      lyricsTab: s.lyricsTab,
+      vocalMode: s.vocalMode,
+      creationMode: s.creationMode,
+      language: s.language,
+      durationMode: s.durationMode,
+      durationMin: s.durationMin,
+      durationMax: s.durationMax,
+      duration: s.duration,
+      performance: s.performance,
+      variations: s.variations,
+      bpm: s.bpm,
+      musicKey: s.musicKey,
+      seed: s.seed,
+      negativePrompt: s.negativePrompt,
+      pickedGenres: s.pickedGenres,
+      pickedVibes: s.pickedVibes,
+      pickedVocals: s.pickedVocals,
+      pickedInstruments: s.pickedInstruments,
+      pickedDrums: s.pickedDrums,
+      pickedProduction: s.pickedProduction,
+      pickedEras: s.pickedEras,
+      pickedCustomTags: s.pickedCustomTags,
+      pickedStructure: s.pickedStructure,
+      blueprint: s.blueprint,
+      blueprintStatus: s.blueprintStatus === 'generating' ? 'idle' : s.blueprintStatus,
+      lyricsCraft: s.lyricsCraft,
+      lyricsQuality: s.lyricsQuality,
+      activeTab: s.blueprintStatus === 'generating' ? 'idea' : s.activeTab,
+      energy: s.energy,
+      vocalGender: s.vocalGender,
+      tempoFeel: s.tempoFeel,
+    }
+    localStorage.setItem(STUDIO_DRAFT_KEY, JSON.stringify(draft))
+  } catch {
+    // ignore persistence failures
+  }
+}
+
+const draft = loadStudioDraft()
 
 function clearBlueprintState(): Partial<StudioStore> {
   return {
@@ -118,6 +184,7 @@ function clearBlueprintState(): Partial<StudioStore> {
     lyricsQualityBusy: false,
     lyricsRewriteBusy: false,
     writerStage: null,
+    blueprintNotes: [],
   }
 }
 
@@ -161,6 +228,18 @@ function selectedTags(s: StudioStore) {
     ...s.pickedEras,
     ...s.pickedCustomTags,
   ]
+}
+
+function progressNote(stage: string) {
+  const clean = stage.replace(/[()]/g, '').trim()
+  if (/starved for VRAM/i.test(clean)) return clean
+  if (/planning/i.test(clean)) return 'Reading the idea, locking the topic, and mapping the verse path.'
+  if (/drafting/i.test(clean)) return 'Drafting sung lyrics from the song brief, not a screenplay scene.'
+  if (/critique/i.test(clean)) return 'Checking prompt match, structure, rhyme, flow, and singability.'
+  if (/rewrite/i.test(clean)) return 'Rewriting weak sections and tightening the hook, bridge, and outro.'
+  if (/harmonizing/i.test(clean)) return 'Asking ACE to align caption, BPM, key, duration, and engine metadata.'
+  if (/finalizing/i.test(clean)) return 'Running the final lyric quality gate and preparing the editable blueprint.'
+  return clean
 }
 
 export function buildSongIntent(s: StudioStore): SongIntent {
@@ -227,55 +306,56 @@ export function isEditingMode(mode: ModeType) {
 
 export const useStudioStore = create<StudioStore>((set, get) => ({
   tier: 'simple',
-  songTitle: '',
-  styleText: '',
-  songIdea: '',
-  lyrics: '',
-  lyricsTab: 'prompt',
-  vocalMode: 'vocals',
-  creationMode: 'simple',
-  language: 'en',
+  songTitle: draft.songTitle ?? '',
+  styleText: draft.styleText ?? '',
+  songIdea: draft.songIdea ?? '',
+  lyrics: draft.lyrics ?? '',
+  lyricsTab: draft.lyricsTab ?? 'prompt',
+  vocalMode: draft.vocalMode ?? 'vocals',
+  creationMode: draft.creationMode ?? 'simple',
+  language: draft.language ?? 'en',
   styleStrength: 60,
   // Default to Auto so Simple mode fine-tunes length itself; the user can
   // still switch to Sample/Loop/Song and set a manual range.
-  durationMode: 'auto',
-  durationMin: 180,
-  durationMax: 240,
-  duration: 210,
-  performance: 'balanced',
-  variations: 2,
-  bpm: '',
-  musicKey: '',
-  seed: null,
-  negativePrompt: 'wrong language, muddy mix, distorted vocals, low fidelity',
-  pickedGenres: [],
-  pickedVibes: [],
-  pickedVocals: [],
-  pickedInstruments: [],
-  pickedDrums: [],
-  pickedProduction: [],
-  pickedEras: [],
-  pickedCustomTags: [],
-  pickedStructure: ['Intro', 'Verse', 'Chorus'],
+  durationMode: draft.durationMode ?? 'auto',
+  durationMin: draft.durationMin ?? 180,
+  durationMax: draft.durationMax ?? 240,
+  duration: draft.duration ?? 210,
+  performance: draft.performance ?? 'balanced',
+  variations: draft.variations ?? 2,
+  bpm: draft.bpm ?? '',
+  musicKey: draft.musicKey ?? '',
+  seed: draft.seed ?? null,
+  negativePrompt: draft.negativePrompt ?? 'wrong language, muddy mix, distorted vocals, low fidelity',
+  pickedGenres: draft.pickedGenres ?? [],
+  pickedVibes: draft.pickedVibes ?? [],
+  pickedVocals: draft.pickedVocals ?? [],
+  pickedInstruments: draft.pickedInstruments ?? [],
+  pickedDrums: draft.pickedDrums ?? [],
+  pickedProduction: draft.pickedProduction ?? [],
+  pickedEras: draft.pickedEras ?? [],
+  pickedCustomTags: draft.pickedCustomTags ?? [],
+  pickedStructure: draft.pickedStructure ?? ['Intro', 'Verse', 'Chorus'],
   tagFilter: '',
   customTagInput: '',
-  blueprint: null,
-  blueprintStatus: 'idle',
+  blueprint: draft.blueprint ?? null,
+  blueprintStatus: draft.blueprintStatus === 'generating' ? 'idle' : draft.blueprintStatus ?? 'idle',
   blueprintError: null,
-  lyricsCraft: null,
-  lyricsQuality: null,
+  lyricsCraft: draft.lyricsCraft ?? null,
+  lyricsQuality: draft.lyricsQuality ?? null,
   lyricsQualityBusy: false,
   lyricsRewriteBusy: false,
   enhanceStyleBusy: false,
   enhanceWordsBusy: false,
   titleBusy: false,
   writerStage: null,
+  blueprintNotes: [],
   writerModel: localStorage.getItem('doremi.writer.model') || 'auto',
   writerModels: [],
   thinkingPower: Number(localStorage.getItem('doremi.thinking.power')) || 2,
-  energy: 'balanced',
-  vocalGender: 'any',
-  tempoFeel: 'auto',
+  energy: draft.energy ?? 'balanced',
+  vocalGender: draft.vocalGender ?? 'any',
+  tempoFeel: draft.tempoFeel ?? 'auto',
   guidanceScale: 7,
   inferenceSteps: 0,
   lmTemperature: 0.85,
@@ -283,7 +363,7 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
   repetitionPenalty: 1.15,
   constrainedDecoding: true,
   conceptBusy: false,
-  activeTab: 'idea',
+  activeTab: draft.activeTab === 'blueprint' && draft.vocalMode === 'instrumental' ? 'idea' : draft.activeTab ?? 'idea',
   actionQueue: [],
   runningAction: null,
   tasks: [],
@@ -369,24 +449,32 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
     set({ conceptBusy: true })
     useUiStore.getState().toast(s.thinkingPower >= 3 ? 'Dreaming up a concept (deep thinking)…' : 'Dreaming up a fresh concept…')
     try {
-      const concept = await window.doReMi.generateConcept({
+      const concept = await window.doReMi.generateConceptIdea({
         think: s.thinkingPower >= 3,
         model: s.writerModel === 'auto' || s.writerModel === 'engine' ? undefined : s.writerModel,
       })
       set({
         songIdea: concept.idea,
-        styleText: concept.style,
         songTitle: concept.title || s.songTitle,
         lyricsTab: s.vocalMode === 'instrumental' ? 'instrumental' : 'prompt',
       })
-      useUiStore.getState().toast('Fresh concept ready')
+      useUiStore.getState().toast('Idea ready - shaping sound around it...')
+      const style = await window.doReMi.generateStyleForIdea({
+        title: concept.title || s.songTitle,
+        idea: concept.idea,
+        tags: selectedTags(get()),
+        think: s.thinkingPower >= 3,
+        model: s.writerModel === 'auto' || s.writerModel === 'engine' ? undefined : s.writerModel,
+      })
+      set({ styleText: style })
+      useUiStore.getState().toast('Fresh connected idea and style ready')
     } catch {
       // generateConcept has its own fallback, so this is only reached on a true
       // IPC failure - seed a distinct idea/style locally.
       const g = GENRES[Math.floor(Math.random() * GENRES.length)]
       const v = VIBES[Math.floor(Math.random() * VIBES.length)]
       set({
-        songIdea: `A ${v.toLowerCase()} song about a single vivid moment - find where it turns and build toward it.`,
+        songIdea: `A ${v.toLowerCase()} song with one clear emotional hook, verse images that develop naturally, and a chorus built for singing along.`,
         styleText: `${g} with a clear lead vocal, one signature instrument, and a mix that opens up on the chorus.`,
       })
     } finally {
@@ -472,7 +560,15 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
       return
     }
     const language = s.vocalMode === 'instrumental' || s.language === 'auto' ? 'en' : s.language
-    set({ blueprintStatus: 'generating', blueprintError: null, lyricsCraft: null, lyricsQuality: null, lyricsQualityBusy: false, writerStage: 'planning' })
+    set({
+      blueprintStatus: 'generating',
+      blueprintError: null,
+      lyricsCraft: null,
+      lyricsQuality: null,
+      lyricsQualityBusy: false,
+      writerStage: 'planning',
+      blueprintNotes: ['Reading the idea, locking the topic, and mapping the verse path.'],
+    })
     try {
       // ACE's LM plans the music (caption, BPM, key, duration). The words
       // ALWAYS go through the big local writer for vocal songs: qwen3 drafts,
@@ -523,7 +619,13 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
         : Promise.resolve(null)
 
       const offProgress = window.doReMi.onWriterProgress((stage) => {
-        set({ writerStage: stage })
+        set((current) => {
+          const note = progressNote(stage)
+          return {
+            writerStage: stage,
+            blueprintNotes: current.blueprintNotes.includes(note) ? current.blueprintNotes : [...current.blueprintNotes, note].slice(-8),
+          }
+        })
       })
 
       let blueprint, craft
@@ -542,7 +644,11 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
       // generation time, so we harmonize them here where the user can see it.
       // We adopt the engine's caption/BPM/key/duration; the lyrics stay ours.
       if (engineReady && craft?.lyrics.trim()) {
-        set({ writerStage: 'harmonizing caption + metadata with the engine' })
+        const note = progressNote('harmonizing caption + metadata with the engine')
+        set((current) => ({
+          writerStage: 'harmonizing caption + metadata with the engine',
+          blueprintNotes: current.blueprintNotes.includes(note) ? current.blueprintNotes : [...current.blueprintNotes, note].slice(-8),
+        }))
         const harmonized = await window.doReMi.formatInput({
           caption: merged.caption,
           lyrics: merged.lyrics,
@@ -687,6 +793,29 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
     useUiStore.getState().toast('Blueprint discarded')
   },
   resetBlueprint: () => set({ ...clearBlueprintState() }),
+  resetStudio: () => {
+    set({
+      songTitle: '',
+      styleText: '',
+      songIdea: '',
+      lyrics: '',
+      lyricsTab: 'prompt',
+      vocalMode: 'vocals',
+      pickedGenres: [],
+      pickedVibes: [],
+      pickedVocals: [],
+      pickedInstruments: [],
+      pickedDrums: [],
+      pickedProduction: [],
+      pickedEras: [],
+      pickedCustomTags: [],
+      pickedStructure: ['Intro', 'Verse', 'Chorus'],
+      activeTab: 'idea',
+      actionQueue: [],
+      ...clearBlueprintState(),
+    })
+    useUiStore.getState().toast('Studio cleared')
+  },
   submitGeneration: async () => {
     const s = get()
     const mode: ModeType = s.vocalMode === 'instrumental' ? 'instrumental' : (s.creationMode === 'lyrics' ? 'lyrics' : 'simple')
@@ -754,4 +883,6 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
     }
   },
 }))
+
+useStudioStore.subscribe((state) => persistStudioDraft(state))
 

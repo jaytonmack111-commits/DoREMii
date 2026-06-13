@@ -56,13 +56,13 @@ export function StudioPage() {
     styleStrength, durationMode, durationMin, durationMax, performance, variations, bpm, musicKey,
     seed, negativePrompt, songTitle, pickedGenres, pickedVibes, pickedVocals, pickedInstruments,
     pickedDrums, pickedProduction, pickedEras, pickedCustomTags, pickedStructure, tagFilter,
-    customTagInput, blueprint, blueprintStatus, blueprintError, lyricsCraft, lyricsQuality, lyricsQualityBusy, lyricsRewriteBusy, writerStage,
+    customTagInput, blueprint, blueprintStatus, blueprintError, lyricsCraft, lyricsQuality, lyricsQualityBusy, lyricsRewriteBusy, writerStage, blueprintNotes,
     titleBusy, conceptBusy,
     thinkingPower, energy, vocalGender, tempoFeel, guidanceScale, inferenceSteps, lmTemperature, lmTopP, repetitionPenalty, constrainedDecoding,
     writerModel, writerModels, tasks, generating, activeTab, actionQueue, runningAction,
     set, setActiveTab, queueAction, toggleIn, setWriterModel, loadWriterModels,
     addCustomTag, applyPack, randomIdea, suggestSongTitle, patchBlueprint, analyzeBlueprintLyrics, rewriteBlueprintLyrics,
-    acceptBlueprint, rejectBlueprint, resetBlueprint, submitGeneration,
+    acceptBlueprint, rejectBlueprint, resetBlueprint, resetStudio, submitGeneration,
   } = studio
 
   const [expandedTags, setExpandedTags] = useState<Set<string>>(new Set())
@@ -160,6 +160,7 @@ export function StudioPage() {
         </div>
         <div className="studio-head-actions">
           <button className="mini-action" onClick={() => void randomIdea()} disabled={conceptBusy}><Dices size={15} /> {conceptBusy ? 'Thinking...' : 'Random Idea'}</button>
+          <button className="mini-action" onClick={resetStudio}><X size={14} /> Clear Studio</button>
           <div className="segmented small">
             {TIERS.map((t) => (
               <button key={t.id} className={tier === t.id ? 'seg active' : 'seg'} onClick={() => set({ tier: t.id })}>{t.label}</button>
@@ -360,6 +361,7 @@ export function StudioPage() {
               status={blueprintStatus}
               error={blueprintError}
               writerStage={writerStage}
+              notes={blueprintNotes}
               onRetry={() => queueAction('generateBlueprint')}
               onCancel={resetBlueprint}
             />
@@ -506,9 +508,9 @@ export function StudioPage() {
                 )}
                 {showPro && <p className="hint">Pro: co-write these lyrics live with a producer AI that brings specialist writers into a group chat.</p>}
               </div>
-            ) : (
+            ) : blueprintStatus !== 'generating' ? (
               <p className="muted-copy">No blueprint yet. Hit Generate Blueprint and the songwriter AI turns your Idea tab into full lyrics, BPM, key and an engine-ready caption.</p>
-            )}
+            ) : null}
           </div>
         )}
 

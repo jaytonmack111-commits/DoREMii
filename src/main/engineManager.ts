@@ -140,6 +140,25 @@ class EngineManager {
     return this.status
   }
 
+  /** App quit cleanup: stop the managed ACE process and sweep common orphaned
+   *  local model workers so accidental closes don't leave Python/Ollama stacks
+   *  eating memory in the background. */
+  async shutdown() {
+    await this.stop()
+    try {
+      await execFileAsync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `$patterns = @('acestep-api','ACE-Step-1.5','DoReMi','DoReMii'); ` +
+        `Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='uv.exe' OR Name='ollama.exe' OR Name='ollama_llama_server.exe'" | ` +
+        `Where-Object { $cmd = $_.CommandLine; $patterns | Where-Object { $cmd -match [regex]::Escape($_) } } | ` +
+        `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+      ], { timeout: 15_000 })
+    } catch {
+      // Best effort on app shutdown.
+    }
+    return this.status
+  }
+
   /** Hard recovery: kill our child AND any stray ACE process holding the
    *  port (e.g. a wedged adopted engine we have no handle to), then boot
    *  fresh. Wired to the engine pill so a stuck engine is one click away

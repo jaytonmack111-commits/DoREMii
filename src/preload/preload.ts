@@ -64,6 +64,8 @@ const api: DoReMiApi = {
   enhanceText: (input) => ipcRenderer.invoke('writer:enhanceText', input),
   suggestTitle: (input) => ipcRenderer.invoke('writer:suggestTitle', input),
   generateConcept: (input) => ipcRenderer.invoke('writer:generateConcept', input),
+  generateConceptIdea: (input) => ipcRenderer.invoke('writer:generateConceptIdea', input),
+  generateStyleForIdea: (input) => ipcRenderer.invoke('writer:generateStyleForIdea', input),
   getConductorState: () => ipcRenderer.invoke('conductor:state'),
   onConductorState: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, state: 'idle' | 'writer' | 'engine') => callback(state)

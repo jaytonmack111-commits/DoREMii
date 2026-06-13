@@ -6,9 +6,9 @@ import { runSetupCheck } from './setup.js'
 import { deleteSong, getDatabase, listLicenses, listPresets, listSongs, renameSong, showSongInFolder, toggleSongFavorite } from './database.js'
 import { createBlueprint, createGeneration, formatWithEngine, pollGeneration } from './generationService.js'
 import { downloadModel, getEngineSettings, listLocalModels, openModelFolder, updateEngineSettings } from './modelSettings.js'
-import { analyzeLyrics, craftLyrics, enhanceText, generateConcept, isWriterAvailable, listWriterModels, pullOllamaModel, rewriteLyrics, suggestTitle } from './ollamaService.js'
+import { analyzeLyrics, craftLyrics, enhanceText, generateConcept, generateConceptIdea, generateStyleForIdea, isWriterAvailable, listWriterModels, pullOllamaModel, rewriteLyrics, suggestTitle } from './ollamaService.js'
 import { endRoom, sendToRoom, startRoom } from './writersRoomService.js'
-import { beginEngineJob, endEngineJob, getConductorState, withWriter } from './aiConductor.js'
+import { beginEngineJob, endEngineJob, getConductorState, sleepOllama, withWriter } from './aiConductor.js'
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
 
@@ -106,6 +106,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('writer:enhanceText', (_event, input) => withWriter(() => enhanceText(input)))
   ipcMain.handle('writer:suggestTitle', (_event, input) => withWriter(() => suggestTitle(input)))
   ipcMain.handle('writer:generateConcept', (_event, input) => withWriter(() => generateConcept(input)))
+  ipcMain.handle('writer:generateConceptIdea', (_event, input) => withWriter(() => generateConceptIdea(input)))
+  ipcMain.handle('writer:generateStyleForIdea', (_event, input) => withWriter(() => generateStyleForIdea(input)))
   ipcMain.handle('conductor:state', () => getConductorState())
 
   createWindow()
@@ -124,6 +126,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', async () => {
+  await sleepOllama()
   const status = engineManager.getStatus()
-  if (status.startedByDoReMi) await engineManager.stop()
+  if (status.startedByDoReMi) await engineManager.shutdown()
 })

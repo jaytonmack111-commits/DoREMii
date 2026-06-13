@@ -49,12 +49,12 @@ ACE FORMAT RULES (follow exactly):
 - Write ONLY the lyrics with their tags. No commentary, no titles, no markdown (** or #), no screenplay narration ("phone buzzes", "the crowd roars", "her voice cuts the heat") - every non-tag line is words the singer literally sings.`
 
 const SCENE_SYSTEM = `You are a story developer for a hit songwriting team. Given a song idea, invent the CONCRETE story the song will tell. Answer briefly:
-1. WHO is singing, and to whom? (invent a specific person/relationship)
-2. WHERE and WHEN? (one specific location, time, season - with 3 sensory details)
-3. THE OBJECT: one physical object that carries the song's emotion
-4. THE TURN: what changes emotionally between verse 1 and the final chorus?
-5. HOOKS: 3 candidate chorus hook lines built from the imagery above (no clichés, no "stars/dreams/heart")
-Keep it under 200 words. This is a private worksheet, not lyrics.`
+1. CORE PREMISE: the song's subject in one plain sentence.
+2. POV: who is singing and what they want emotionally.
+3. VERSE PATH: what Verse 1, Verse 2, Bridge, and Outro should each reveal.
+4. IMAGE PALETTE: 4-6 concrete images the lyrics may reuse.
+5. HOOKS: 3 candidate chorus hook lines with clear rhyme potential.
+Do NOT write a movie synopsis, action scene, screenplay beat, video prompt, hidden-map twist, or paragraph of plot. Keep it under 170 words. This is a private worksheet, not lyrics.`
 
 const CRITIC_SYSTEM = `You are a ruthless, brutally honest lyric critic for a major label. You destroy weak writing so the rewrite can be great. Inspect for:
 - Clichés and dead phrases - especially: stars, dreams, night, heart, soul, fly, shine, light, journey. QUOTE every offender.
@@ -738,7 +738,7 @@ export async function ollamaComplete(
 
 const ENHANCE_PROMPTS: Record<'style' | 'idea' | 'lyrics', string> = {
   style: `You polish sound-and-style descriptions for an AI music generator. Rewrite the user's text into ONE vivid production description: genre, energy, vocal character, key instruments, drum feel, production texture, era. Keep every intention the user expressed. 2-4 sentences, no lyrics, no section tags. Reply with ONLY the rewritten description - no preamble, no quotes, no explanation.`,
-  idea: `You sharpen song concepts. Rewrite the user's idea into a tighter concept: clear subject, emotional angle, and ONE core image or metaphor the song can hang on. Keep their topic and language exactly. 1-3 sentences. Reply with ONLY the rewritten concept - no preamble, no quotes, no explanation.`,
+  idea: `You are a songwriting development producer. Transform the user's rough idea into a stronger SONG BRIEF, not a movie plot. Preserve the core topic exactly, then add: emotional angle, point of view, hook target, verse-to-chorus arc, and 3-5 lyric-friendly images. Avoid over-plotted action, hidden-map twists, screenplay language, character dumps, and video/image prompt wording. 2-4 compact sentences. Reply with ONLY the improved song idea - no preamble, no quotes, no explanation.`,
   lyrics: `You are a lyric editor. Improve the user's lyrics IN PLACE: keep their structure tags, story, and most of their words. Fix weak lines, rhythm, and rhyme; tighten syllables for singability (6-10 per line). Reply with ONLY the improved lyrics, nothing else.`,
 }
 
@@ -851,16 +851,16 @@ const RANDOM_THEMES = [
   'a mechanic making a lullaby from broken dashboard chimes',
 ]
 const RANDOM_STRUCTURES = [
-  'character portrait: one person, one place, one object, one emotional change',
-  'mini movie: cold open, problem, risky choice, consequence, final image',
-  'letter song: the singer writes to someone absent and admits the real truth late',
-  'party snapshot: crowded scene, private secret, chorus as the release',
-  'mythic ordinary: make a tiny everyday event feel legendary without fantasy cliches',
-  'confession: the singer starts proud, cracks in verse two, and resolves in the outro',
-  'roadside scene: one location, strangers crossing paths, a hook built on overheard words',
-  'memory object: a physical item triggers three time jumps and a final decision',
-  'call-and-response idea: narrator versus group, chorus answers the verses',
-  'comic-to-heartfelt: starts funny and specific, turns sincere without getting vague',
+  'anthem: verse tension, chorus release, bridge truth, outro resolve',
+  'confession: proud verse one, honest verse two, final chorus acceptance',
+  'party song: crowded verses, private hook, chantable final chorus',
+  'letter song: direct address, remembered detail, chorus as the unsaid truth',
+  'comeback song: setback, decision, lift, victory outro',
+  'road song: movement, place names, chorus built around one repeated phrase',
+  'duet-ready call and response: narrator line, group answer, bigger chorus',
+  'comic-to-heartfelt: funny concrete details turning sincere by the bridge',
+  'dance-floor release: pressure in verses, simple hook, rhythmic payoff',
+  'story ballad: clear scene, emotional turn, closing image without plot twists',
 ]
 const BANNED_CONCEPT_PHRASES = [
   'last train',
@@ -873,57 +873,89 @@ const BANNED_CONCEPT_PHRASES = [
 ]
 let recentConceptSeeds: string[] = []
 
-/** AI-backed Random Idea: returns a DISTINCT concept and production style
- *  (one is about meaning, the other about sound) instead of two near-identical
- *  one-liners. Falls back to seeded randoms if the writer is unavailable. */
-export async function generateConcept(input?: { think?: boolean; model?: string }): Promise<{ title: string; idea: string; style: string }> {
+function songIdeaFallback(pick: <T>(items: T[]) => T, remember: (seed: string) => void) {
+  const availableThemes = RANDOM_THEMES.filter((theme) => !recentConceptSeeds.includes(theme))
+  const theme = pick(availableThemes.length ? availableThemes : RANDOM_THEMES)
+  const shape = pick(RANDOM_STRUCTURES)
+  remember(theme)
+  const cleanShape = shape.split(':').pop()?.trim() || 'verse tension, chorus release, bridge truth, outro resolve'
+  return {
+    title: '',
+    idea: `A song about ${theme}, shaped around ${cleanShape}. Keep the lyric focus on one singable emotional angle, with verse images that develop the idea and a chorus built around one memorable hook phrase.`,
+  }
+}
+
+export async function generateConceptIdea(input?: { think?: boolean; model?: string }): Promise<{ title: string; idea: string }> {
   const model = await pickWriterModel(input?.model)
-  const pick = (items: string[]) => items[Math.floor(Math.random() * items.length)]
+  const pick = <T>(items: T[]) => items[Math.floor(Math.random() * items.length)]
   const remember = (seed: string) => {
     recentConceptSeeds = [seed, ...recentConceptSeeds.filter((item) => item !== seed)].slice(0, 6)
   }
-  const fallback = () => {
-    const availableThemes = RANDOM_THEMES.filter((theme) => !recentConceptSeeds.includes(theme))
-    const g = pick(RANDOM_GENRES)
-    const t = pick(availableThemes.length ? availableThemes : RANDOM_THEMES)
-    const structure = pick(RANDOM_STRUCTURES)
-    remember(t)
-    return {
-      title: '',
-      idea: `A ${structure} song about ${t}. The verses show what happens in concrete scenes, the chorus turns one physical image into the hook, and the outro lands on a clear choice instead of a vague feeling.`,
-      style: `${g} with a distinct lead vocal, one signature hook instrument, a specific drum pocket, and a mix texture that changes between intimate verses and wider choruses.`,
-    }
-  }
-  if (!model) return fallback()
+  if (!model) return songIdeaFallback(pick, remember)
   try {
-    const seedGenre = pick(RANDOM_GENRES)
     const availableThemes = RANDOM_THEMES.filter((theme) => !recentConceptSeeds.includes(theme))
     const seedTheme = pick(availableThemes.length ? availableThemes : RANDOM_THEMES)
     const seedStructure = pick(RANDOM_STRUCTURES)
     remember(seedTheme)
     const raw = await ollamaComplete(
       model,
-      `You are a hit-making music concept generator. Invent ONE original, specific, emotionally gripping song concept. Reply as STRICT JSON on a single line, nothing before or after:
-{"title":"a short evocative title (2-5 words)","idea":"3-4 sentences telling the ACTUAL STORY: name a specific character or narrator, a specific place and moment, what literally happens, the emotional turn, and the one concrete image the song centers on. Do NOT write vague meta like 'find the moment it turns' - actually describe the moment.","style":"2-3 sentences of concrete production detail: genre and subgenre, 2-3 specific instruments, the drum/rhythm feel, tempo in words, vocal character, era, and one production texture (e.g. tape warmth, cavernous reverb, gritty lo-fi)."}
-The "idea" is the STORY (who, where, what happens); the "style" is the SOUND. They must be clearly different. Be vivid, concrete, and surprising - never generic filler.
-Hard bans: do not use trains, dying towns, recurring dreams, or phrases like "find the moment it turns."`,
-      `Loose inspiration to reinterpret freely (don't copy literally): theme "${seedTheme}", a flavour of ${seedGenre}, structure "${seedStructure}". Recent seeds to avoid repeating: ${recentConceptSeeds.join('; ') || 'none'}. Write the full concept now with a real story and rich production detail.`,
-      { think: true, temperature: 1.18 },
+      `You create SONG IDEAS, not movie plots. Reply as STRICT JSON only:
+{"title":"2-5 word song title","idea":"2 sentences max. Sentence 1: the song premise and emotional angle. Sentence 2: the verse-to-chorus arc and hook target."}
+Rules:
+- Do not name random characters unless the user asks.
+- Do not write action-scene plot twists, hidden maps, collapsed murals, screenplay beats, or image/video prompts.
+- The idea must be easy to turn into lyrics with verses, chorus, bridge, and outro.
+- Mention the hook angle, not every event.`,
+      `Seed theme: ${seedTheme}
+Song shape: ${seedStructure}
+Recent seeds to avoid: ${recentConceptSeeds.join('; ') || 'none'}
+Write one compact song idea now.`,
+      { think: input?.think ?? true, temperature: 0.95 },
     )
-    const cleaned = stripLeakedReasoning(raw)
-    const match = cleaned.match(/\{[\s\S]*\}/)
+    const match = stripLeakedReasoning(raw).match(/\{[\s\S]*\}/)
     if (match) {
-      const parsed = JSON.parse(match[0]) as { title?: string; idea?: string; style?: string }
+      const parsed = JSON.parse(match[0]) as { title?: string; idea?: string }
       const idea = (parsed.idea || '').trim()
-      const style = (parsed.style || '').trim()
-      const combined = `${parsed.title ?? ''} ${idea} ${style}`.toLowerCase()
+      const combined = `${parsed.title ?? ''} ${idea}`.toLowerCase()
       const banned = BANNED_CONCEPT_PHRASES.some((phrase) => combined.includes(phrase))
-      if (!banned && idea.length > 80 && style.length > 45) return { title: (parsed.title || '').trim(), idea, style }
+      if (!banned && idea.length > 45 && idea.length < 420) return { title: (parsed.title || '').trim(), idea }
     }
-    return fallback()
+    return songIdeaFallback(pick, remember)
   } catch {
-    return fallback()
+    return songIdeaFallback(pick, remember)
   }
+}
+
+export async function generateStyleForIdea(input: { title?: string; idea: string; tags?: string[]; model?: string; think?: boolean }): Promise<string> {
+  const model = await pickWriterModel(input.model)
+  const pick = <T>(items: T[]) => items[Math.floor(Math.random() * items.length)]
+  const genre = pick(RANDOM_GENRES)
+  const tagLine = input.tags?.length ? `User tags to respect: ${input.tags.join(', ')}` : `Suggested genre flavor: ${genre}`
+  const fallback = `${genre} production shaped around the song idea: clear lead vocal, hook-forward chorus, one signature instrument, tight drums, and a mix that grows from intimate verses into a wider final chorus.`
+  if (!model) return fallback
+  try {
+    const text = await ollamaComplete(
+      model,
+      `You write SOUND & STYLE captions for an AI music generator. Base the production on the song idea. Reply with ONLY 2-3 vivid sentences. Include genre/subgenre, tempo feel, vocal character, key instruments, drum feel, and mix texture. Do not add lyrics. Do not change the song topic.`,
+      `Title: ${input.title || 'untitled'}
+Song idea: ${input.idea}
+${tagLine}`,
+      { think: input.think ?? true, temperature: 0.85 },
+    )
+    const cleaned = cleanQuotedText(stripLeakedReasoning(text))
+    return cleaned && !looksLikeExplanation(cleaned) ? cleaned : fallback
+  } catch {
+    return fallback
+  }
+}
+
+/** AI-backed Random Idea: returns a DISTINCT concept and production style
+ *  (one is about meaning, the other about sound) instead of two near-identical
+ *  one-liners. Falls back to seeded randoms if the writer is unavailable. */
+export async function generateConcept(input?: { think?: boolean; model?: string }): Promise<{ title: string; idea: string; style: string }> {
+  const concept = await generateConceptIdea(input)
+  const style = await generateStyleForIdea({ ...input, title: concept.title, idea: concept.idea })
+  return { ...concept, style }
 }
 
 export function pullOllamaModel(model: string): Promise<string> {

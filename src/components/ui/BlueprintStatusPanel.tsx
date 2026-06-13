@@ -5,6 +5,7 @@ interface Props {
   status: 'idle' | 'generating' | 'ready' | 'accepted' | 'error'
   error: string | null
   writerStage: string | null
+  notes?: string[]
   onRetry: () => void
   onCancel: () => void
 }
@@ -23,7 +24,7 @@ function formatTimer(seconds: number) {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-export function BlueprintStatusPanel({ status, error, writerStage, onRetry, onCancel }: Props) {
+export function BlueprintStatusPanel({ status, error, writerStage, notes = [], onRetry, onCancel }: Props) {
   const [elapsed, setElapsed] = useState(0)
   const [stageElapsed, setStageElapsed] = useState(0)
 
@@ -103,6 +104,16 @@ export function BlueprintStatusPanel({ status, error, writerStage, onRetry, onCa
       </div>
       <div className="progress-bar">
         <div className="progress-fill" style={{ width: `${Math.max(5, ((activeIndex + 1) / STAGES.length) * 100)}%` }} />
+      </div>
+      <div className="blueprint-thoughts" aria-live="polite">
+        <strong>What the writer is doing</strong>
+        {notes.length ? (
+          <ul>
+            {notes.map((note) => <li key={note}>{note}</li>)}
+          </ul>
+        ) : (
+          <p>Preparing the song intent packet and waiting for the first writer update.</p>
+        )}
       </div>
     </div>
   )

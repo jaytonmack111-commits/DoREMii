@@ -346,6 +346,8 @@ export interface DoReMiApi {
   enhanceText: (input: { kind: 'style' | 'idea' | 'lyrics'; text: string; tags?: string[]; model?: string; think?: boolean }) => Promise<string>
   suggestTitle: (input: { lyrics: string; idea?: string; model?: string }) => Promise<string>
   generateConcept: (input?: { think?: boolean; model?: string }) => Promise<{ title: string; idea: string; style: string }>
+  generateConceptIdea: (input?: { think?: boolean; model?: string }) => Promise<{ title: string; idea: string }>
+  generateStyleForIdea: (input: { title?: string; idea: string; tags?: string[]; model?: string; think?: boolean }) => Promise<string>
   getConductorState: () => Promise<ConductorState>
   onConductorState: (callback: (state: ConductorState) => void) => () => void
   rewriteLyrics: (input: { lyrics: string; idea?: string; instruction: string; model?: string; intent?: SongIntent }) => Promise<LyricsCraftResult>
