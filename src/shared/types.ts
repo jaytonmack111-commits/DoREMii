@@ -112,6 +112,7 @@ export interface LyricsDraftSnapshot {
   note: string
   createdAt: string
   quality?: LyricsQualityReport | null
+  previousLyrics?: string | null
 }
 
 export interface WriterProgressEvent {
@@ -154,7 +155,31 @@ export interface LyricsQualityReport {
     outlierLines: string[]
     fourBarWarnings: string[]
     nurseryRhymeWarnings: string[]
+    lineStats?: {
+      section: string
+      line: string
+      syllables: number
+      endRhyme: string
+      internalEchoes: string[]
+    }[]
+    endRhymeMap?: Record<string, string[]>
+    internalRhymeHints?: string[]
   }
+  sectionScores?: {
+    section: string
+    score: number
+    verdict: 'keep' | 'rewrite' | 'cut' | 'expand'
+    notes: string[]
+  }[]
+  lineDecisions?: {
+    section: string
+    lineNumber: number
+    text: string
+    decision: 'keep' | 'rewrite' | 'cut' | 'expand'
+    reasons: string[]
+    syllables: number
+    endRhyme: string
+  }[]
   topicLock?: {
     requiredTerms: string[]
     matchedTerms: string[]

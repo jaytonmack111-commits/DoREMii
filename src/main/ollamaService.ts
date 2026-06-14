@@ -244,7 +244,8 @@ const LYRIC_SECTION_RE = /^\s*\[(?:intro|verse(?:\s*\d+)?|pre-chorus|chorus|hook
 const NON_LYRIC_LINE_RE = /^(?:okay|first,|but wait|now,|alternatively|maybe|for the outro|rhyme\/flow|adherence|score:|verdict:|notes:|critic|local validator|rewrite instruction|requirements?:|the user|looking at|let's|i need|i should|return only|these lines|that'?s|this means)\b/i
 
 function extractLyricsOnly(raw: string) {
-  const clean = sanitizeLyrics(stripLeakedReasoning(raw))
+  const envelope = parseLyricsEnvelope(raw)
+  const clean = sanitizeLyrics(stripLeakedReasoning(envelope?.lyrics || raw))
   const lines = clean.split(/\r?\n/)
   const start = lines.findIndex((line) => LYRIC_SECTION_RE.test(line))
   if (start === -1) return ''
@@ -261,6 +262,29 @@ function extractLyricsOnly(raw: string) {
   return sungLinesBySection(extracted).untagged?.length ? '' : extracted
 }
 
+function parseLyricsEnvelope(raw: string): { lyrics: string; keptLines?: string[]; rewrittenLines?: string[] } | null {
+  const text = stripReasoning(raw).trim()
+  const candidates = [
+    text,
+    text.match(/\{[\s\S]*\}/)?.[0] ?? '',
+  ].filter(Boolean)
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as { lyrics?: unknown; keptLines?: unknown; rewrittenLines?: unknown }
+      if (typeof parsed.lyrics === 'string' && parsed.lyrics.includes('[')) {
+        return {
+          lyrics: parsed.lyrics,
+          keptLines: Array.isArray(parsed.keptLines) ? parsed.keptLines.filter((x): x is string => typeof x === 'string') : undefined,
+          rewrittenLines: Array.isArray(parsed.rewrittenLines) ? parsed.rewrittenLines.filter((x): x is string => typeof x === 'string') : undefined,
+        }
+      }
+    } catch {
+      // Not a JSON envelope - fall back to tagged lyric extraction.
+    }
+  }
+  return null
+}
+
 function progressSummary(text: string, max = 260) {
   return sanitizeLyrics(stripLeakedReasoning(text))
     .replace(/\s+/g, ' ')
@@ -268,7 +292,7 @@ function progressSummary(text: string, max = 260) {
     .slice(0, max)
 }
 
-function makeDraftSnapshot(label: string, lyrics: string, note: string, intent?: SongIntent, idea?: string): LyricsDraftSnapshot {
+function makeDraftSnapshot(label: string, lyrics: string, note: string, intent?: SongIntent, idea?: string, previousLyrics?: string | null): LyricsDraftSnapshot {
   return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     label,
@@ -276,6 +300,7 @@ function makeDraftSnapshot(label: string, lyrics: string, note: string, intent?:
     note,
     createdAt: new Date().toISOString(),
     quality: buildQualityReport(lyrics, null, intent, idea),
+    previousLyrics: previousLyrics ?? null,
   }
 }
 
@@ -482,12 +507,26 @@ function endRhymeKey(line: string) {
   return match?.[0] ?? clean.slice(-3)
 }
 
+function internalEchoes(line: string) {
+  const words = line.toLowerCase().replace(/[^a-z'\s-]/g, ' ').split(/\s+/).filter(Boolean)
+  const keys = words.map((word) => {
+    const clean = word.replace(/'s$/, '').replace(/[^a-z]/g, '')
+    return clean.length > 3 ? clean.match(/[aeiouy][a-z]*$/)?.[0] ?? '' : ''
+  }).filter(Boolean)
+  const counts = new Map<string, number>()
+  for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1)
+  return Array.from(counts.entries()).filter(([, count]) => count > 1).map(([key]) => key).slice(0, 3)
+}
+
 function analyzeProsody(lyrics: string): NonNullable<LyricsQualityReport['prosody']> {
   const sections = sungLinesBySection(lyrics)
   const allSyllables: number[] = []
   const outlierLines: string[] = []
   const fourBarWarnings: string[] = []
   const nurseryRhymeWarnings: string[] = []
+  const lineStats: NonNullable<LyricsQualityReport['prosody']>['lineStats'] = []
+  const endRhymeMap: Record<string, string[]> = {}
+  const internalRhymeHints: string[] = []
 
   for (const [section, lines] of Object.entries(sections)) {
     if (section === 'untagged' || !lines.length) continue
@@ -496,6 +535,11 @@ function analyzeProsody(lyrics: string): NonNullable<LyricsQualityReport['prosod
     const avg = syllables.reduce((sum, n) => sum + n, 0) / syllables.length
     lines.forEach((line, index) => {
       const count = syllables[index]
+      const endRhyme = endRhymeKey(line)
+      const echoes = internalEchoes(line)
+      lineStats.push({ section, line, syllables: count, endRhyme, internalEchoes: echoes })
+      if (endRhyme) (endRhymeMap[endRhyme] ??= []).push(`[${section}] ${line}`)
+      if (echoes.length) internalRhymeHints.push(`[${section}] ${echoes.join(', ')} echoes in "${line}"`)
       if (count < 4 || count > 14 || Math.abs(count - avg) > 4) {
         outlierLines.push(`[${section}] ${count} syllables: "${line}"`)
       }
@@ -521,7 +565,90 @@ function analyzeProsody(lyrics: string): NonNullable<LyricsQualityReport['prosod
     outlierLines: outlierLines.slice(0, 4),
     fourBarWarnings: fourBarWarnings.slice(0, 4),
     nurseryRhymeWarnings: nurseryRhymeWarnings.slice(0, 4),
+    lineStats,
+    endRhymeMap: Object.fromEntries(Object.entries(endRhymeMap).filter(([, lines]) => lines.length > 1).slice(0, 12)),
+    internalRhymeHints: internalRhymeHints.slice(0, 6),
   }
+}
+
+function buildLineDecisions(
+  lyrics: string,
+  intent?: SongIntent | null,
+  fallbackIdea?: string,
+): NonNullable<LyricsQualityReport['lineDecisions']> {
+  const sections = sungLinesBySection(lyrics)
+  const topicLock = buildTopicLock(intent, fallbackIdea, lyrics)
+  const requiredTerms = topicLock.requiredTerms.map((term) => term.toLowerCase())
+  const seen = new Map<string, number>()
+  const decisions: NonNullable<LyricsQualityReport['lineDecisions']> = []
+  for (const [section, lines] of Object.entries(sections)) {
+    if (section === 'untagged') continue
+    lines.forEach((line, index) => {
+      const normalized = line.toLowerCase().replace(/[^\p{L}' ]/gu, '').replace(/\s+/g, ' ').trim()
+      seen.set(normalized, (seen.get(normalized) ?? 0) + 1)
+      const syllables = estimateSyllables(line)
+      const reasons: string[] = []
+      let decision: 'keep' | 'rewrite' | 'cut' | 'expand' = 'keep'
+      if (/^\*.*\*$/.test(line) || /\b(?:voice cuts|camera|scene|phone buzz|crowd roars|the track|arrangement|sfx|screenplay)\b/i.test(line)) {
+        decision = 'cut'
+        reasons.push('not sung lyric text')
+      }
+      if (syllables < 4 || syllables > 14) {
+        decision = decision === 'cut' ? 'cut' : 'rewrite'
+        reasons.push(`${syllables} syllables`)
+      }
+      if (normalized && (seen.get(normalized) ?? 0) > 1 && !/^chorus|final chorus/.test(section)) {
+        decision = 'rewrite'
+        reasons.push('repeated outside chorus')
+      }
+      const hasTopic = requiredTerms.length === 0 || requiredTerms.some((term) => normalized.includes(term))
+      if (!hasTopic && /verse|chorus|bridge|outro/.test(section)) {
+        decision = decision === 'keep' ? 'rewrite' : decision
+        reasons.push('weak topic lock')
+      }
+      if (/^outro/.test(section) && lines.length < 3) {
+        decision = decision === 'keep' ? 'expand' : decision
+        reasons.push('outro needs closure')
+      }
+      decisions.push({
+        section,
+        lineNumber: index + 1,
+        text: line,
+        decision,
+        reasons: reasons.length ? reasons : ['strong enough to preserve'],
+        syllables,
+        endRhyme: endRhymeKey(line),
+      })
+    })
+  }
+  return decisions
+}
+
+function buildSectionScores(
+  lyrics: string,
+  lineDecisions: NonNullable<LyricsQualityReport['lineDecisions']>,
+): NonNullable<LyricsQualityReport['sectionScores']> {
+  const sections = sungLinesBySection(lyrics)
+  return Object.entries(sections)
+    .filter(([section]) => section !== 'untagged')
+    .map(([section, lines]) => {
+      const local = lineDecisions.filter((item) => item.section === section)
+      const rewriteCount = local.filter((item) => item.decision === 'rewrite').length
+      const cutCount = local.filter((item) => item.decision === 'cut').length
+      const expandCount = local.filter((item) => item.decision === 'expand').length
+      let score = 100 - rewriteCount * 18 - cutCount * 30 - expandCount * 14
+      if (/verse|chorus/.test(section) && ![4, 6, 8].includes(lines.length)) score -= 12
+      if (/outro/.test(section) && lines.length < 3) score -= 30
+      score = Math.max(0, Math.min(100, score))
+      const verdict: 'keep' | 'rewrite' | 'cut' | 'expand' = cutCount ? 'cut' : expandCount ? 'expand' : rewriteCount ? 'rewrite' : 'keep'
+      const notes = [
+        `${lines.length} lines`,
+        rewriteCount ? `${rewriteCount} rewrite` : '',
+        cutCount ? `${cutCount} cut` : '',
+        expandCount ? `${expandCount} expand` : '',
+      ].filter(Boolean)
+      return { section, score, verdict, notes }
+    })
 }
 
 function buildQualityReport(
@@ -537,6 +664,8 @@ function buildQualityReport(
   const allLines = Object.values(sections).flat()
   const issues = validateLyrics(clean, intent, fallbackIdea)
   const prosody = analyzeProsody(clean)
+  const lineDecisions = buildLineDecisions(clean, intent, fallbackIdea)
+  const sectionScores = buildSectionScores(clean, lineDecisions)
   if (semanticAdherence?.verdict === 'fail') {
     issues.push(`Prompt adherence failed: ${semanticAdherence.notes[0] ?? 'lyrics drift away from the requested idea'}.`)
   } else if (semanticAdherence?.verdict === 'needs_work') {
@@ -616,6 +745,8 @@ function buildQualityReport(
       engineSafety: issues.some((issue) => /stage|screenplay|Off-topic/i.test(issue)) ? 45 : 92,
     },
     prosody,
+    sectionScores,
+    lineDecisions,
     semanticAdherence: semanticAdherence ?? undefined,
     topicLock,
     modelCritique,
@@ -703,6 +834,8 @@ export async function rewriteLyrics(input: { lyrics: string; idea?: string; inst
   const clean = sanitizeLyrics(input.lyrics)
   if (!clean) throw new Error('No lyrics to rewrite')
   const startingQuality = buildQualityReport(clean, null, input.intent, input.idea)
+  const lockedLines = startingQuality.lineDecisions?.filter((line) => line.decision === 'keep').map((line) => `[${line.section}] ${line.text}`) ?? []
+  const repairLines = startingQuality.lineDecisions?.filter((line) => line.decision !== 'keep').map((line) => `[${line.section} line ${line.lineNumber}] ${line.decision.toUpperCase()}: ${line.text} (${line.reasons.join('; ')})`) ?? []
   emitWriterProgress({ stage: 'rewrite', note: 'Rebuilding the lyrics from the current quality issues and the song intent packet.' })
   const rewriteRes = await chat(model, [
     { role: 'system', content: SONGWRITER_SYSTEM },
@@ -713,8 +846,10 @@ export async function rewriteLyrics(input: { lyrics: string; idea?: string; inst
         `Rewrite instruction: ${input.instruction}`,
         'Surgical rewrite rule: keep any strong, on-topic, singable bars exactly or nearly intact. Replace only lines named by the quality issues, weak/outlier lines, missing sections, bland filler, and transitions. Preserve the best hook/callback if it works.',
         `Current quality issues:\n${startingQuality.issues.length ? startingQuality.issues.map((issue) => `- ${issue}`).join('\n') : '- none'}`,
+        `LOCKED GOOD BARS - preserve these unless grammar forces a tiny edit:\n${lockedLines.length ? lockedLines.slice(0, 24).map((line) => `- ${line}`).join('\n') : '- none identified'}`,
+        `LINES TO REPAIR - only these should change unless a section is broken:\n${repairLines.length ? repairLines.slice(0, 24).map((line) => `- ${line}`).join('\n') : '- none identified'}`,
         `Current lyrics:\n${clean}`,
-        'Return only the fixed sung lyrics with section tags.',
+        'Return a JSON object only: {"lyrics":"[Verse 1]\\n...","keptLines":["exact preserved line"],"rewrittenLines":["changed line"]}. The lyrics string must contain the full fixed song with section tags.',
       ].filter(Boolean).join('\n\n'),
     },
   ], 0.75, true, 'lyrics-rewrite')
@@ -722,7 +857,7 @@ export async function rewriteLyrics(input: { lyrics: string; idea?: string; inst
   if (!rewritten) {
     throw new Error('The rewrite returned critique notes instead of tagged lyrics. Try again or switch writer models.')
   }
-  const draftSnapshot = makeDraftSnapshot('Rewrite draft', rewritten, 'Fresh rewrite from the requested fix.', input.intent, input.idea)
+  const draftSnapshot = makeDraftSnapshot('Rewrite draft', rewritten, 'Surgical rewrite from the requested fix.', input.intent, input.idea, clean)
   emitWriterProgress({ stage: 'rewrite', note: 'Rewrite draft is ready for a fresh critique.', draft: draftSnapshot })
   emitWriterProgress({ stage: 'self-critique', note: 'Checking the rewrite for structure, singability, prompt match, and off-topic drift.' })
   const critiqueRes = await chat(model, [
@@ -1273,7 +1408,7 @@ export async function craftLyrics(input: {
   emitWriterProgress({ stage: 'drafting', note: 'Writing Draft 1 as tagged, singable lyrics from the worksheet.' })
   const draftRes = await chat(model, [
     { role: 'system', content: SONGWRITER_SYSTEM },
-    { role: 'user', content: `${brief}\n\nYour story worksheet (use this material - it is the song's world):\n${scene}` },
+    { role: 'user', content: `${brief}\n\nYour story worksheet (use this material - it is the song's world):\n${scene}\n\nReturn a JSON object only: {"lyrics":"[Verse 1]\\n...","keptLines":[],"rewrittenLines":[]}. The lyrics string must contain the full song with section tags.` },
   ], 0.9, true, 'draft')
   const draft = extractLyricsOnly(draftRes.text)
   if (!draft) {
@@ -1315,11 +1450,14 @@ export async function craftLyrics(input: {
 
     emitWriterProgress({ stage: 'rewrite', note: 'The draft did not clear every gate, so the writer is rebuilding weak sections instead of appending notes.' })
     validationIssues = validateLyrics(current, input.intent, input.idea)
+    const repairReport = buildQualityReport(current, critique, input.intent, input.idea, adherence)
+    const lockedLines = repairReport.lineDecisions?.filter((line) => line.decision === 'keep').map((line) => `[${line.section}] ${line.text}`) ?? []
+    const repairLines = repairReport.lineDecisions?.filter((line) => line.decision !== 'keep').map((line) => `[${line.section} line ${line.lineNumber}] ${line.decision.toUpperCase()}: ${line.text} (${line.reasons.join('; ')})`) ?? []
     const rewriteRes = await chat(model, [
       { role: 'system', content: SONGWRITER_SYSTEM },
       { role: 'user', content: `${brief}\n\nStory worksheet:\n${scene}` },
       { role: 'assistant', content: current },
-      { role: 'user', content: `A professional critic and local validator reviewed your lyrics.\n\nCritic review:\n${critique}\n\nLocal validator rejects:\n${validationIssues.length ? validationIssues.map((issue) => `- ${issue}`).join('\n') : '- none'}\n\nRewrite from scratch only if the section is structurally broken. Otherwise perform a surgical rewrite. Requirements:\n- Output ONLY sung lyrics with section tags.\n- ${plan.text.replace(/\n/g, '\n- ')}\n- Keep every verse and hook anchored to the topic lock in the song intent packet.\n- Preserve the strongest on-topic bars, hooks, and callbacks from the previous draft.\n- Replace weak, off-topic, unsingable, filler, or validator-rejected lines.\n- One core metaphor for the whole song; no adjective-stacking.\n- 6-10 syllables per line, consistent within each section.\n- Verse 2 must progress from Verse 1; Bridge must turn the song; Outro must close with 3-4 sung lines.\n- No screenplay, no phone/camera/crowd descriptions - every non-tag line is sung.\n- Strong hook in the chorus; do not repeat verses verbatim.\n- Do not paste critic notes, rhyme labels, or planning text into the lyrics.\n\nReturn only the revised lyrics.` },
+      { role: 'user', content: `A professional critic and local validator reviewed your lyrics.\n\nCritic review:\n${critique}\n\nLocal validator rejects:\n${validationIssues.length ? validationIssues.map((issue) => `- ${issue}`).join('\n') : '- none'}\n\nRewrite from scratch only if the section is structurally broken. Otherwise perform a surgical rewrite. Requirements:\n- Output ONLY sung lyrics with section tags.\n- ${plan.text.replace(/\n/g, '\n- ')}\n- Keep every verse and hook anchored to the topic lock in the song intent packet.\n- Preserve the strongest on-topic bars, hooks, and callbacks from the previous draft.\n- Replace weak, off-topic, unsingable, filler, or validator-rejected lines.\n- One core metaphor for the whole song; no adjective-stacking.\n- 6-10 syllables per line, consistent within each section.\n- Verse 2 must progress from Verse 1; Bridge must turn the song; Outro must close with 3-4 sung lines.\n- No screenplay, no phone/camera/crowd descriptions - every non-tag line is sung.\n- Strong hook in the chorus; do not repeat verses verbatim.\n- Do not paste critic notes, rhyme labels, or planning text into the lyrics.\n\nLOCKED GOOD BARS - preserve these unless grammar forces a tiny edit:\n${lockedLines.length ? lockedLines.slice(0, 24).map((line) => `- ${line}`).join('\n') : '- none identified'}\n\nLINES TO REPAIR - only these should change unless a section is broken:\n${repairLines.length ? repairLines.slice(0, 24).map((line) => `- ${line}`).join('\n') : '- none identified'}\n\nReturn a JSON object only: {"lyrics":"[Verse 1]\\n...","keptLines":["exact preserved line"],"rewrittenLines":["changed line"]}. The lyrics string must contain the full revised song with section tags.` },
     ], 0.85, true, `rewrite-${round + 1}`)
     const rewritten = extractLyricsOnly(rewriteRes.text)
     if (!rewritten) {
@@ -1328,7 +1466,7 @@ export async function craftLyrics(input: {
     }
     current = rewritten
     validationIssues = validateLyrics(current, input.intent, input.idea)
-    const snapshot = makeDraftSnapshot(`Draft ${drafts.length + 1}`, current, `Rewrite round ${round + 1} after critic and flow checks.`, input.intent, input.idea)
+    const snapshot = makeDraftSnapshot(`Draft ${drafts.length + 1}`, current, `Surgical rewrite round ${round + 1} after critic and flow checks.`, input.intent, input.idea, drafts[drafts.length - 1]?.lyrics ?? null)
     drafts.push(snapshot)
     emitWriterProgress({ stage: 'rewrite', note: `${snapshot.label} is ready. Comparing it against the previous draft and running a fresh quality gate.`, draft: snapshot })
   }

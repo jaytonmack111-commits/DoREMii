@@ -28,6 +28,20 @@ function formatTimer(seconds: number) {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
+function lyricLines(text: string) {
+  return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+}
+
+function changedLineSet(current: string, previous?: string | null) {
+  if (!previous) return new Set<number>()
+  const prev = new Set(lyricLines(previous).map((line) => line.toLowerCase()))
+  const changed = new Set<number>()
+  lyricLines(current).forEach((line, index) => {
+    if (!/^\[[^\]]+\]$/.test(line) && !prev.has(line.toLowerCase())) changed.add(index)
+  })
+  return changed
+}
+
 export function BlueprintStatusPanel({ status, error, writerStage, notes = [], startedAt, stageStartedAt, drafts = [], onRetry, onCancel }: Props) {
   const [now, setNow] = useState(() => Date.now())
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null)
@@ -70,6 +84,9 @@ export function BlueprintStatusPanel({ status, error, writerStage, notes = [], s
   const elapsed = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0
   const stageElapsed = stageStartedAt ? Math.max(0, Math.floor((now - stageStartedAt) / 1000)) : elapsed
   const selectedDraft = drafts.find((draft) => draft.id === selectedDraftId) ?? drafts[drafts.length - 1] ?? null
+  const previousDraft = selectedDraft ? drafts[drafts.findIndex((draft) => draft.id === selectedDraft.id) - 1] : null
+  const scoreDelta = selectedDraft?.quality && previousDraft?.quality ? selectedDraft.quality.score - previousDraft.quality.score : null
+  const changedLines = selectedDraft ? changedLineSet(selectedDraft.lyrics, selectedDraft.previousLyrics ?? previousDraft?.lyrics ?? null) : new Set<number>()
   return (
     <div className="blueprint-status generating-state">
       <div className="gen-header">
@@ -130,9 +147,17 @@ export function BlueprintStatusPanel({ status, error, writerStage, notes = [], s
             <div className="draft-preview">
               <div className="draft-preview-meta">
                 <span>{selectedDraft.note}</span>
+                {scoreDelta !== null && <span className={scoreDelta >= 0 ? 'delta-good' : 'delta-bad'}>{scoreDelta >= 0 ? '+' : ''}{scoreDelta} vs previous</span>}
                 {selectedDraft.quality && <span>{selectedDraft.quality.verdict.replace('_', ' ')}</span>}
               </div>
-              <pre>{selectedDraft.lyrics}</pre>
+              <div className="draft-compare-lines">
+                {lyricLines(selectedDraft.lyrics).map((line, index) => (
+                  <div key={`${index}-${line}`} className={changedLines.has(index) ? 'changed' : /^\[[^\]]+\]$/.test(line) ? 'tag-line' : 'kept'}>
+                    <span>{String(index + 1).padStart(2, '0')}</span>
+                    <code>{line}</code>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>

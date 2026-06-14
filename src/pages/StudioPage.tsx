@@ -495,6 +495,34 @@ export function StudioPage() {
                           ))}
                         </div>
                       )}
+                      {lyricsQuality.sectionScores?.length ? (
+                        <div className="structure-lock">
+                          <strong>Section scores</strong>
+                          <div className="section-score-grid">
+                            {lyricsQuality.sectionScores.map((section) => (
+                              <span className={`section-score ${section.verdict}`} key={section.section}>
+                                <em>{section.section}</em>
+                                <b>{section.score}</b>
+                                <small>{section.verdict}</small>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {lyricsQuality.lineDecisions?.length ? (
+                        <details className="line-locks">
+                          <summary>Locked bars and repair map</summary>
+                          <div className="line-lock-list">
+                            {lyricsQuality.lineDecisions.slice(0, 40).map((line) => (
+                              <div className={`line-lock ${line.decision}`} key={`${line.section}-${line.lineNumber}-${line.text}`}>
+                                <span>{line.decision}</span>
+                                <code>[{line.section} {line.lineNumber}] {line.text}</code>
+                                <em>{line.syllables} syl · {line.endRhyme || 'no rhyme'} · {line.reasons.join(', ')}</em>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      ) : null}
                       {lyricsQuality.prosody && (
                         <div className="structure-lock">
                           <strong>Prosody / flow</strong>
@@ -503,7 +531,18 @@ export function StudioPage() {
                             {lyricsQuality.prosody.outlierLines.slice(0, 2).map((line) => <span className="chip tiny warn" key={line}>{line}</span>)}
                             {lyricsQuality.prosody.fourBarWarnings.slice(0, 2).map((line) => <span className="chip tiny warn" key={line}>{line}</span>)}
                             {lyricsQuality.prosody.nurseryRhymeWarnings.slice(0, 2).map((line) => <span className="chip tiny warn" key={line}>{line}</span>)}
+                            {lyricsQuality.prosody.internalRhymeHints?.slice(0, 2).map((line) => <span className="chip tiny on" key={line}>{line}</span>)}
                           </div>
+                          {lyricsQuality.prosody.endRhymeMap && Object.keys(lyricsQuality.prosody.endRhymeMap).length > 0 && (
+                            <details className="rhyme-map">
+                              <summary>End-rhyme map</summary>
+                              <div className="rhyme-map-grid">
+                                {Object.entries(lyricsQuality.prosody.endRhymeMap).slice(0, 10).map(([rhyme, lines]) => (
+                                  <span key={rhyme}><b>{rhyme}</b><em>{lines.length} lines</em></span>
+                                ))}
+                              </div>
+                            </details>
+                          )}
                         </div>
                       )}
                       {!!lyricsQuality.issues.length && (

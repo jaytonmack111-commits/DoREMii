@@ -118,7 +118,8 @@ type StudioDraft = Partial<Pick<StudioStore,
   'durationMode' | 'durationMin' | 'durationMax' | 'duration' | 'performance' | 'variations' | 'bpm' | 'musicKey' |
   'seed' | 'negativePrompt' | 'pickedGenres' | 'pickedVibes' | 'pickedVocals' | 'pickedInstruments' | 'pickedDrums' |
   'pickedProduction' | 'pickedEras' | 'pickedCustomTags' | 'pickedStructure' | 'blueprint' | 'blueprintStatus' |
-  'lyricsCraft' | 'lyricsQuality' | 'blueprintNotes' | 'blueprintDrafts' | 'activeTab' | 'energy' | 'vocalGender' | 'tempoFeel'
+  'lyricsCraft' | 'lyricsQuality' | 'blueprintNotes' | 'blueprintStartedAt' | 'writerStage' | 'writerStageStartedAt' |
+  'blueprintDrafts' | 'activeTab' | 'energy' | 'vocalGender' | 'tempoFeel'
 >>
 
 function loadStudioDraft(): StudioDraft {
@@ -161,12 +162,15 @@ function persistStudioDraft(s: StudioStore) {
       pickedCustomTags: s.pickedCustomTags,
       pickedStructure: s.pickedStructure,
       blueprint: s.blueprint,
-      blueprintStatus: s.blueprintStatus === 'generating' ? 'idle' : s.blueprintStatus,
+      blueprintStatus: s.blueprintStatus,
       lyricsCraft: s.lyricsCraft,
       lyricsQuality: s.lyricsQuality,
       blueprintNotes: s.blueprintNotes,
+      blueprintStartedAt: s.blueprintStartedAt,
+      writerStage: s.writerStage,
+      writerStageStartedAt: s.writerStageStartedAt,
       blueprintDrafts: s.blueprintDrafts,
-      activeTab: s.blueprintStatus === 'generating' ? 'idea' : s.activeTab,
+      activeTab: s.activeTab,
       energy: s.energy,
       vocalGender: s.vocalGender,
       tempoFeel: s.tempoFeel,
@@ -369,7 +373,7 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
   tagFilter: '',
   customTagInput: '',
   blueprint: draft.blueprint ?? null,
-  blueprintStatus: draft.blueprintStatus === 'generating' ? 'idle' : draft.blueprintStatus ?? 'idle',
+  blueprintStatus: draft.blueprintStatus ?? 'idle',
   blueprintError: null,
   lyricsCraft: draft.lyricsCraft ?? null,
   lyricsQuality: draft.lyricsQuality ?? null,
@@ -378,10 +382,10 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
   enhanceStyleBusy: false,
   enhanceWordsBusy: false,
   titleBusy: false,
-  writerStage: null,
+  writerStage: draft.writerStage ?? null,
   blueprintNotes: draft.blueprintNotes ?? [],
-  blueprintStartedAt: null,
-  writerStageStartedAt: null,
+  blueprintStartedAt: draft.blueprintStartedAt ?? null,
+  writerStageStartedAt: draft.writerStageStartedAt ?? null,
   blueprintDrafts: draft.blueprintDrafts ?? draft.lyricsCraft?.drafts ?? [],
   writerModel: localStorage.getItem('doremi.writer.model') || 'auto',
   writerModels: [],
