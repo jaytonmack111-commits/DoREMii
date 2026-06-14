@@ -344,6 +344,7 @@ export interface DoReMiApi {
     tags: string[]
   }) => Promise<BlueprintResult>
   pollGeneration: (aceTaskId: string, meta: { title: string; mode: ModeType }) => Promise<GenerationPollResult>
+  releaseEngineJob: () => Promise<void>
   formatInput: (input: { caption: string; lyrics: string; duration?: number; language?: string }) => Promise<{
     caption: string
     lyrics: string

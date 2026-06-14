@@ -287,9 +287,27 @@ function beginPolling(task: GenerationTask) {
   const aceId = task.aceTaskId
   if (!aceId) return
   const meta = { title: task.request.title, mode: task.request.mode }
+  let pollFailures = 0
   const timer = window.setInterval(async () => {
     let result: GenerationPollResult | undefined
-    try { result = await window.doReMi.pollGeneration(aceId, meta) } catch { return }
+    try {
+      result = await window.doReMi.pollGeneration(aceId, meta)
+      pollFailures = 0
+    } catch (error) {
+      pollFailures += 1
+      if (pollFailures >= 5) {
+        window.clearInterval(pollTimers[task.id])
+        delete pollTimers[task.id]
+        const message = error instanceof Error ? error.message : String(error)
+        useStudioStore.setState((s) => ({
+          tasks: s.tasks.map((item) => item.id === task.id ? { ...item, status: 'failed', error: message } : item),
+        }))
+        useAppStore.getState().pushLog(`DoReMii generation polling failed: ${message}`)
+        useUiStore.getState().toast(`Generation polling failed: ${message}`)
+        void window.doReMi.releaseEngineJob().catch(() => undefined)
+      }
+      return
+    }
     if (!result) return
     const poll = result
     useStudioStore.setState((s) => ({

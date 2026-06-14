@@ -55,7 +55,10 @@ export async function sleepOllama(): Promise<void> {
  *  is safe; the state only drops back to idle when the outermost job ends and a
  *  generation hasn't taken over in the meantime. */
 export async function withWriter<T>(fn: () => Promise<T>): Promise<T> {
-  if (current !== 'engine') setConductorState('writer')
+  if (current === 'engine') {
+    throw new Error('The music engine is generating right now. Wait for the song to finish before running writer fixes.')
+  }
+  setConductorState('writer')
   try {
     return await fn()
   } finally {

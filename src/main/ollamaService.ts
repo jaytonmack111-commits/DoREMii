@@ -37,6 +37,8 @@ CRAFT RULES:
 - The song tells one story about the user's idea: a person, a place, a change. Verse 2 develops what Verse 1 started.
 - The chorus carries ONE memorable hook line built from the core image.
 - Every sung line belongs to the user's topic. No drift.
+- Write like a record is being built section by section: Verse 1 opens the situation, Chorus states the emotional thesis, Verse 2 changes or raises the stakes, Bridge reveals the turn, Final Chorus lifts/resolves, Outro leaves a clean afterimage.
+- During rewrites, preserve strong on-topic bars, hooks, callbacks, and section anchors. Replace only weak, off-topic, unsingable, missing, or structurally broken material unless the whole section fails.
 
 ACE FORMAT RULES (follow exactly):
 - Section tags in square brackets on their own line: [Intro], [Verse 1], [Pre-Chorus], [Chorus], [Bridge], [Final Chorus], [Outro]. Blank line between sections.
@@ -50,6 +52,7 @@ ACE FORMAT RULES (follow exactly):
 - Parentheses inside a sung line mean backing vocals: "We rise together (together)". Use sparingly.
 - UPPERCASE words mean shouted/intense delivery: use only at true peaks.
 - The chorus may repeat its hook; verses must never repeat lines verbatim; never repeat a whole section's text outside the chorus.
+- The outro must be sung closure, not a tiny label or a tossed-off line. For normal songs, write 3-4 concise lines that resolve the hook or leave a memorable final image.
 - Write ONLY the lyrics with their tags. No commentary, no titles, no markdown (** or #), no screenplay narration ("phone buzzes", "the crowd roars", "her voice cuts the heat") - every non-tag line is words the singer literally sings.`
 
 const SCENE_SYSTEM = `You are a story developer for a hit songwriting team. Given a song idea, invent the CONCRETE story the song will tell. Answer briefly:
@@ -394,6 +397,9 @@ function validateLyrics(lyrics: string, intent?: SongIntent | null, fallbackIdea
   const hasVerse1 = sectionNames.some((name) => /^verse\s*1?$/.test(name))
   const hasVerse2 = sectionNames.some((name) => /^verse\s*2$/.test(name))
   const hasChorus = sectionNames.some((name) => /^chorus/.test(name))
+  const outroLines = Object.entries(sections)
+    .filter(([name]) => /^outro/.test(name))
+    .flatMap(([, lines]) => lines)
   const expectedSections = expectedSectionsFor(intent)
   const missingSections = [...new Set(expectedSections)].filter((section) => !hasExpectedSection(sectionNames, section))
   for (const section of missingSections) {
@@ -406,6 +412,9 @@ function validateLyrics(lyrics: string, intent?: SongIntent | null, fallbackIdea
   }
   const minLines = intent?.durationMode === 'sample' ? 2 : intent?.durationMode === 'loop' ? 6 : 16
   if (allLines.length < minLines) issues.push(`Too short for this ${intent?.durationMode ?? 'song'}; needs at least ${minLines} sung lines.`)
+  if ((intent?.durationMode ?? 'song') === 'song' && expectedSections.includes('outro') && outroLines.length > 0 && outroLines.length < 3) {
+    issues.push('Outro is too short; normal songs need 3-4 sung closing lines that resolve the central idea.')
+  }
 
   const screenplayPattern = /\b(?:voice cuts|camera|we see|scene|phone buzz|buzzes|crowd roars|singer enters|vocal enters|begins singing|verse opens|the track|arrangement|instrumental|sfx|stage direction|screenplay)\b/i
   for (const line of allLines) {
@@ -702,6 +711,7 @@ export async function rewriteLyrics(input: { lyrics: string; idea?: string; inst
       content: [
         buildIntentBrief(input.intent, input.idea),
         `Rewrite instruction: ${input.instruction}`,
+        'Surgical rewrite rule: keep any strong, on-topic, singable bars exactly or nearly intact. Replace only lines named by the quality issues, weak/outlier lines, missing sections, bland filler, and transitions. Preserve the best hook/callback if it works.',
         `Current quality issues:\n${startingQuality.issues.length ? startingQuality.issues.map((issue) => `- ${issue}`).join('\n') : '- none'}`,
         `Current lyrics:\n${clean}`,
         'Return only the fixed sung lyrics with section tags.',
@@ -1126,7 +1136,7 @@ export function structurePlanFor(intent?: SongIntent): { sections: { tag: string
       { tag: '[Chorus]', lines: '4 lines' },
       { tag: '[Verse 2]', lines: '4-6 lines' },
       { tag: '[Chorus]', lines: '4 lines' },
-      { tag: '[Outro]', lines: '2 lines' },
+      { tag: '[Outro]', lines: '3 lines' },
     ]
     minDuration = 120
   } else if (target < 220) {
@@ -1137,7 +1147,7 @@ export function structurePlanFor(intent?: SongIntent): { sections: { tag: string
       { tag: '[Chorus]', lines: '4 lines' },
       { tag: '[Bridge]', lines: '2-4 lines' },
       { tag: '[Final Chorus]', lines: '4 lines' },
-      { tag: '[Outro]', lines: '2 lines' },
+      { tag: '[Outro]', lines: '3-4 lines' },
     ]
     minDuration = 180
   } else {
@@ -1151,7 +1161,7 @@ export function structurePlanFor(intent?: SongIntent): { sections: { tag: string
       { tag: '[Chorus]', lines: '4-6 lines' },
       { tag: '[Bridge]', lines: '4 lines' },
       { tag: '[Final Chorus]', lines: '4-6 lines' },
-      { tag: '[Outro]', lines: '2 lines' },
+      { tag: '[Outro]', lines: '3-4 lines' },
     ]
     minDuration = 210
   }
@@ -1309,7 +1319,7 @@ export async function craftLyrics(input: {
       { role: 'system', content: SONGWRITER_SYSTEM },
       { role: 'user', content: `${brief}\n\nStory worksheet:\n${scene}` },
       { role: 'assistant', content: current },
-      { role: 'user', content: `A professional critic and local validator reviewed your lyrics.\n\nCritic review:\n${critique}\n\nLocal validator rejects:\n${validationIssues.length ? validationIssues.map((issue) => `- ${issue}`).join('\n') : '- none'}\n\nRewrite from scratch if needed. Requirements:\n- Output ONLY sung lyrics with section tags.\n- ${plan.text.replace(/\n/g, '\n- ')}\n- Keep every verse and hook anchored to the topic lock in the song intent packet.\n- One core metaphor for the whole song; no adjective-stacking.\n- 6-10 syllables per line, consistent within each section.\n- No screenplay, no phone/camera/crowd descriptions - every non-tag line is sung.\n- Strong hook in the chorus; do not repeat verses verbatim.\n\nReturn only the revised lyrics.` },
+      { role: 'user', content: `A professional critic and local validator reviewed your lyrics.\n\nCritic review:\n${critique}\n\nLocal validator rejects:\n${validationIssues.length ? validationIssues.map((issue) => `- ${issue}`).join('\n') : '- none'}\n\nRewrite from scratch only if the section is structurally broken. Otherwise perform a surgical rewrite. Requirements:\n- Output ONLY sung lyrics with section tags.\n- ${plan.text.replace(/\n/g, '\n- ')}\n- Keep every verse and hook anchored to the topic lock in the song intent packet.\n- Preserve the strongest on-topic bars, hooks, and callbacks from the previous draft.\n- Replace weak, off-topic, unsingable, filler, or validator-rejected lines.\n- One core metaphor for the whole song; no adjective-stacking.\n- 6-10 syllables per line, consistent within each section.\n- Verse 2 must progress from Verse 1; Bridge must turn the song; Outro must close with 3-4 sung lines.\n- No screenplay, no phone/camera/crowd descriptions - every non-tag line is sung.\n- Strong hook in the chorus; do not repeat verses verbatim.\n- Do not paste critic notes, rhyme labels, or planning text into the lyrics.\n\nReturn only the revised lyrics.` },
     ], 0.85, true, `rewrite-${round + 1}`)
     const rewritten = extractLyricsOnly(rewriteRes.text)
     if (!rewritten) {

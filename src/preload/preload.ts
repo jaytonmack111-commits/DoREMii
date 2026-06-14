@@ -33,6 +33,7 @@ const api: DoReMiApi = {
   createBlueprint: (request) => ipcRenderer.invoke('generation:blueprint', request),
   formatInput: (input) => ipcRenderer.invoke('generation:formatInput', input),
   pollGeneration: (aceTaskId, meta) => ipcRenderer.invoke('generation:poll', aceTaskId, meta),
+  releaseEngineJob: () => ipcRenderer.invoke('generation:releaseEngineJob'),
   getWriterAvailability: () => ipcRenderer.invoke('writer:availability'),
   listWriterModels: () => ipcRenderer.invoke('writer:models'),
   pullOllamaModel: (model) => ipcRenderer.invoke('writer:pullModel', model),

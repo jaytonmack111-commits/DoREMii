@@ -87,7 +87,12 @@ app.whenReady().then(async () => {
   // Generation owns the GPU: sleep Ollama first, release it when a poll ends.
   ipcMain.handle('generation:create', async (_event, request) => {
     await beginEngineJob()
-    return createGeneration(request)
+    try {
+      return await createGeneration(request)
+    } catch (error) {
+      endEngineJob()
+      throw error
+    }
   })
   ipcMain.handle('generation:blueprint', (_event, request) => withWriter(() => createBlueprint(request)))
   ipcMain.handle('generation:formatInput', (_event, input) => formatWithEngine(input))
@@ -96,6 +101,7 @@ app.whenReady().then(async () => {
     if (result.status === 'succeeded' || result.status === 'failed') endEngineJob()
     return result
   })
+  ipcMain.handle('generation:releaseEngineJob', () => endEngineJob())
   ipcMain.handle('writer:availability', () => isWriterAvailable())
   ipcMain.handle('writer:models', () => listWriterModels())
   ipcMain.handle('writer:pullModel', (_event, model) => pullOllamaModel(model))

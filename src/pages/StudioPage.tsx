@@ -93,7 +93,9 @@ export function StudioPage() {
   const hasLyricsForVocals = vocalMode === 'instrumental' || Boolean(lyrics.trim()) || (blueprintStatus === 'accepted' && Boolean(blueprint?.lyrics.trim()))
   const blueprintHasLyrics = Boolean(blueprint?.lyrics.trim() && blueprint.lyrics.trim() !== '[Instrumental]')
   const canAcceptBlueprint = Boolean(blueprint && blueprintStatus !== 'accepted' && (vocalMode === 'instrumental' || blueprintHasLyrics))
-  const canGenerate = engineReady && !editing && !generating && hasLyricsForVocals
+  const activeEngineJob = generating || tasks.some((task) => !['succeeded', 'failed', 'error'].includes(task.status))
+  const writerLocked = activeEngineJob
+  const canGenerate = engineReady && !editing && !activeEngineJob && hasLyricsForVocals
   const filter = tagFilter.trim().toLowerCase()
   const tagCount = pickedGenres.length + pickedVibes.length + pickedVocals.length + pickedInstruments.length
     + pickedDrums.length + pickedProduction.length + pickedEras.length + pickedCustomTags.length
@@ -351,7 +353,7 @@ export function StudioPage() {
                     <option value="engine">ACE engine LM — fast, basic</option>
                   </select>
                 </label>
-                <button className={actionClass('generateBlueprint', 'mini-action accent')} onClick={() => queueAction('generateBlueprint')} disabled={!engineReady && !actionQueue.includes('generateBlueprint')}>
+                <button className={actionClass('generateBlueprint', 'mini-action accent')} onClick={() => queueAction('generateBlueprint')} disabled={writerLocked || (!engineReady && !actionQueue.includes('generateBlueprint'))}>
                   <Wand2 size={14} />
                   {actionLabel('generateBlueprint', blueprint ? 'Regenerate' : 'Generate Blueprint', 'Generating...')}
                 </button>
@@ -407,10 +409,10 @@ export function StudioPage() {
                   <button className="mini-action good" onClick={acceptBlueprint} disabled={!canAcceptBlueprint}>
                     <Check size={14} /> {blueprintStatus === 'accepted' ? 'Accepted' : 'Accept Blueprint'}
                   </button>
-                  <button className="mini-action" onClick={() => void analyzeBlueprintLyrics()} disabled={lyricsQualityBusy || !blueprint.lyrics.trim()}>
+                  <button className="mini-action" onClick={() => void analyzeBlueprintLyrics()} disabled={writerLocked || lyricsQualityBusy || !blueprint.lyrics.trim()}>
                     <ListChecks size={14} /> {lyricsQualityBusy ? 'Checking...' : 'Check Lyrics'}
                   </button>
-                  <button className="mini-action" onClick={() => queueAction('generateBlueprint')}><RefreshCw size={14} /> Reroll</button>
+                  <button className="mini-action" disabled={writerLocked} onClick={() => queueAction('generateBlueprint')}><RefreshCw size={14} /> Reroll</button>
                   <button className="mini-action danger" onClick={rejectBlueprint}><X size={14} /> Discard</button>
                   {showPro && (
                     <button className="writers-room-cta" onClick={() => void useRoomStore.getState().openRoom()}>
@@ -521,18 +523,18 @@ export function StudioPage() {
                         </details>
                       )}
                       <div className="quality-actions">
-                        <button className="mini-action accent" disabled={lyricsRewriteBusy} onClick={() => void rewriteBlueprintLyrics('Fix every issue in the quality report while preserving the core song idea.')}>
+                        <button className="mini-action accent" disabled={writerLocked || lyricsRewriteBusy} onClick={() => void rewriteBlueprintLyrics('Fix every issue in the quality report while preserving the core song idea.')}>
                           <Wand2 size={14} /> {lyricsRewriteBusy ? 'Rewriting...' : 'Fix Issues'}
                         </button>
-                        <button className="mini-action accent" disabled={lyricsRewriteBusy} onClick={() => void rewriteBlueprintLyrics('Rewrite the full song to follow the user idea much more closely. Keep the production style, but remove unrelated imagery. Do not change the topic. Return the full song with all required sections.')}>
+                        <button className="mini-action accent" disabled={writerLocked || lyricsRewriteBusy} onClick={() => void rewriteBlueprintLyrics('Rewrite the full song to follow the user idea much more closely. Keep the production style, but remove unrelated imagery. Do not change the topic. Return the full song with all required sections.')}>
                           More Like Idea
                         </button>
-                        <button className="mini-action" disabled={lyricsRewriteBusy} onClick={() => void rewriteBlueprintLyrics('Add or rewrite the outro so the song closes the central idea clearly. Keep all existing good sections, but return the full song with [Outro] included.')}>
+                        <button className="mini-action" disabled={writerLocked || lyricsRewriteBusy} onClick={() => void rewriteBlueprintLyrics('Add or rewrite the outro so the song closes the central idea clearly. Keep all existing good sections, but return the full song with [Outro] included.')}>
                           Generate Outro
                         </button>
-                        <button className="mini-action" disabled={lyricsRewriteBusy} onClick={() => void rewriteBlueprintLyrics('Rewrite only the chorus with a stronger, more memorable hook, then return the full song.')}>Rewrite Chorus</button>
-                        <button className="mini-action" disabled={lyricsRewriteBusy} onClick={() => void rewriteBlueprintLyrics('Remove all stage directions, screenplay narration, sound effects, and non-sung text.')}>Clean</button>
-                        <button className="mini-action" disabled={lyricsRewriteBusy} onClick={() => void rewriteBlueprintLyrics('Make the lyrics more singable with smoother meter and clearer phrasing.')}>Singable</button>
+                        <button className="mini-action" disabled={writerLocked || lyricsRewriteBusy} onClick={() => void rewriteBlueprintLyrics('Rewrite only the chorus with a stronger, more memorable hook, then return the full song.')}>Rewrite Chorus</button>
+                        <button className="mini-action" disabled={writerLocked || lyricsRewriteBusy} onClick={() => void rewriteBlueprintLyrics('Remove all stage directions, screenplay narration, sound effects, and non-sung text.')}>Clean</button>
+                        <button className="mini-action" disabled={writerLocked || lyricsRewriteBusy} onClick={() => void rewriteBlueprintLyrics('Make the lyrics more singable with smoother meter and clearer phrasing.')}>Singable</button>
                       </div>
                     </div>
                   </div>
