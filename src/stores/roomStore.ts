@@ -12,7 +12,7 @@ interface RoomStore {
   error: string | null
   openRoom: () => Promise<void>
   send: (text: string) => Promise<void>
-  applyFinal: (lyrics: string) => void
+  applyFinal: (lyrics: string, mode?: 'full' | 'chorus' | 'verse' | 'outro') => void
   closeRoom: () => Promise<void>
   minimizeRoom: () => void
   restoreRoom: () => void
@@ -20,6 +20,19 @@ interface RoomStore {
   receiveAgents: (agents: RoomAgent[]) => void
   activeAgent: RoomAgent | null
   receiveTyping: (agent: RoomAgent | null) => void
+}
+
+function sectionBlock(label: string, text: string) {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = text.match(new RegExp(`\\[${escaped}[^\\]]*\\][\\s\\S]*?(?=\\n\\s*\\[[^\\]]+\\]|$)`, 'i'))
+  return match?.[0]?.trim() ?? ''
+}
+
+function replaceOrAppendSection(base: string, sectionPattern: RegExp, replacement: string, fallbackTag: string) {
+  const cleanReplacement = replacement.trim().match(/^\[[^\]]+\]/) ? replacement.trim() : `[${fallbackTag}]\n${replacement.trim()}`
+  if (!base.trim()) return cleanReplacement
+  if (sectionPattern.test(base)) return base.replace(sectionPattern, cleanReplacement)
+  return `${base.trim()}\n\n${cleanReplacement}`
 }
 
 export const useRoomStore = create<RoomStore>((set, get) => ({
@@ -78,16 +91,28 @@ export const useRoomStore = create<RoomStore>((set, get) => ({
     }
   },
 
-  applyFinal: (lyrics) => {
+  applyFinal: (lyrics, mode = 'full') => {
     const studio = useStudioStore.getState()
+    const current = studio.blueprint?.lyrics || studio.lyrics
+    let nextLyrics = lyrics.trim()
+    if (mode === 'chorus') {
+      const chorus = sectionBlock('Chorus', lyrics) || lyrics
+      nextLyrics = replaceOrAppendSection(current, /\[Chorus[^\]]*\][\s\S]*?(?=\n\s*\[[^\]]+\]|$)/i, chorus, 'Chorus')
+    } else if (mode === 'verse') {
+      const verse = sectionBlock('Verse 1', lyrics) || sectionBlock('Verse', lyrics) || lyrics
+      nextLyrics = replaceOrAppendSection(current, /\[Verse\s*1?[^\]]*\][\s\S]*?(?=\n\s*\[[^\]]+\]|$)/i, verse, 'Verse 1')
+    } else if (mode === 'outro') {
+      const outro = sectionBlock('Outro', lyrics) || lyrics
+      nextLyrics = replaceOrAppendSection(current, /\[Outro[^\]]*\][\s\S]*?(?=\n\s*\[[^\]]+\]|$)/i, outro, 'Outro')
+    }
     if (studio.blueprint) {
-      studio.patchBlueprint({ lyrics })
+      studio.patchBlueprint({ lyrics: nextLyrics })
       void useStudioStore.getState().analyzeBlueprintLyrics()
     } else {
-      studio.set({ lyrics, lyricsTab: 'write', vocalMode: 'vocals' })
+      studio.set({ lyrics: nextLyrics, lyricsTab: 'write', vocalMode: 'vocals' })
       void useStudioStore.getState().analyzeBlueprintLyrics()
     }
-    useUiStore.getState().toast('Room lyrics applied - review the quality check')
+    useUiStore.getState().toast(mode === 'full' ? 'Room lyrics applied - review the quality check' : `Room ${mode} merged - review the quality check`)
   },
 
   closeRoom: async () => {

@@ -5,6 +5,8 @@ import { useRoomStore } from '../stores/roomStore'
 const QUICK_COMMANDS = [
   { label: 'Rhyme/Flow', prompt: 'Run a strict rhyme and flow check on the current lyrics. Quote weak lines and give fixes.' },
   { label: 'Hook', prompt: 'Rewrite the chorus with a stronger hook. Keep it singable and remove cheesy lines.' },
+  { label: 'Verse', prompt: 'Rewrite Verse 1 and Verse 2 so they develop the user idea with better images, flow, and rhyme. Return complete lyrics.' },
+  { label: 'Outro', prompt: 'Generate a strong outro that resolves the central idea, then return the full song with [Outro].' },
   { label: 'Clean', prompt: 'Remove all screenplay, stage direction, camera, phone, crowd, and narration lines. Return only sung lyrics.' },
   { label: 'Singable', prompt: 'Make these lyrics more singable: smoother meter, cleaner phrasing, and stronger section structure.' },
 ]
@@ -86,15 +88,18 @@ export function WritersRoom() {
               <span className="room-msg-author">{msg.emoji} {msg.name}</span>
               {msg.thinking && (
                 <details className="room-msg-thinking" style={{ fontSize: '0.8em', opacity: 0.8, marginBottom: '0.5rem', cursor: 'pointer' }}>
-                  <summary>View thought process</summary>
+                  <summary>Writer notes</summary>
                   <pre style={{ whiteSpace: 'pre-wrap', padding: '0.5rem', background: 'rgba(0,0,0,0.2)', borderRadius: '4px', marginTop: '0.5rem' }}>{msg.thinking}</pre>
                 </details>
               )}
               <p>{msg.content}</p>
               {msg.agentId !== 'user' && looksLikeLyrics(msg.content) && (
                 <div className="room-message-actions">
-                  <button className="mini-action good" onClick={() => applyFinal(msg.content)}><Check size={14} /> Use As Full Lyrics</button>
-                  <button className="mini-action" onClick={() => send(`Use this as the chorus seed, then write the full song with Verse 1, Chorus, Verse 2, Chorus, Bridge, Final Chorus, and Outro:\n\n${msg.content}`)}>Use As Chorus</button>
+                  <button className="mini-action good" onClick={() => applyFinal(msg.content, 'full')}><Check size={14} /> Use Full</button>
+                  <button className="mini-action" onClick={() => applyFinal(msg.content, 'chorus')}>Use Chorus</button>
+                  <button className="mini-action" onClick={() => applyFinal(msg.content, 'verse')}>Use Verse</button>
+                  <button className="mini-action" onClick={() => applyFinal(msg.content, 'outro')}>Use Outro</button>
+                  <button className="mini-action" onClick={() => send(`Rewrite these into a complete song with Verse 1, Chorus, Verse 2, Chorus, Bridge, Final Chorus, and Outro. Keep the user's original idea and improve rhyme/flow:\n\n${msg.content}`)}>Send To Rewrite</button>
                   <button className="mini-action" onClick={() => send(`Critique these lyrics strictly for prompt match, rhyme, flow, structure, and missing outro:\n\n${msg.content}`)}>Send To Critic</button>
                 </div>
               )}

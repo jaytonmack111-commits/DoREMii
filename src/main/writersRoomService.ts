@@ -25,6 +25,8 @@ Rules:
 - Speak in chat style: short, punchy, conversational. No essays.
 - You chair the room: give specialists concrete assignments, synthesize their ideas, keep momentum.
 - When you need the user's input or approval, ASK them a direct question and stop.
+- If the user asks for lyrics, do not stop at advice. Produce a tagged lyric draft or assign a specialist to produce one.
+- Final lyrics must include [Verse 1], [Chorus], [Verse 2], [Chorus], [Bridge], [Final Chorus], and [Outro] unless the user asked for a short sample.
 - Never fake expertise - spawn a specialist or search instead.`
 
 const SPECIALIST_PROTOCOL = `
@@ -32,6 +34,7 @@ const SPECIALIST_PROTOCOL = `
 - You are one voice in a songwriting room chat. Speak as yourself, short and conversational - pitch lines, react to others, improve what's on the table.
 - You may use, on its own line: [SEARCH] query  -> to look something up on the web before finishing your thought.
 - Suggest concrete lyric lines, not vague advice. Quote and fix other people's lines.
+- If asked to rewrite, return tagged lyric sections, not commentary about what you would do.
 - Never pretend to be the Producer or the user.`
 
 interface RoomSession {
@@ -81,6 +84,20 @@ function transcriptFor(): string {
     .slice(-40)
     .map((m) => `${m.name}: ${m.content}`)
     .join('\n')
+}
+
+function looksLikeCompleteLyrics(text: string) {
+  return /\[Verse\s*1?[^\]]*\]/i.test(text)
+    && /\[Chorus[^\]]*\]/i.test(text)
+    && /\[Verse\s*2[^\]]*\]/i.test(text)
+    && /\[Bridge[^\]]*\]/i.test(text)
+    && /\[Outro[^\]]*\]/i.test(text)
+}
+
+function latestLyricMessage() {
+  return [...(session?.messages ?? [])]
+    .reverse()
+    .find((m) => m.agentId !== 'user' && /\[(?:Verse|Chorus|Bridge|Outro|Final Chorus|Pre-Chorus|Intro)[^\]]*\]/i.test(m.content))
 }
 
 function agentSystem(agent: RoomAgent): string {
@@ -280,9 +297,7 @@ export async function sendToRoom(sender: WebContents, userText: string): Promise
     pushMessage(sender, { agentId: 'user', name: 'You', emoji: '🎤', kind: 'chat', content: userText })
 
     if (/\b(?:yes|yeah|yep|use|apply)\b.*\b(?:lyrics|those|that|it)\b/i.test(userText)) {
-      const latestLyrics = [...session.messages]
-        .reverse()
-        .find((m) => m.agentId !== 'user' && /\[(?:Verse|Chorus|Bridge|Outro|Final Chorus|Pre-Chorus|Intro)[^\]]*\]/i.test(m.content))
+      const latestLyrics = latestLyricMessage()
       if (latestLyrics) {
         pushMessage(sender, {
           agentId: 'producer',
@@ -312,6 +327,13 @@ export async function sendToRoom(sender: WebContents, userText: string): Promise
       if (agent.id === 'producer' && result.waitUser && session.agents.length === 1) break
       // Refresh queue if the producer spawned agents this round.
       if (agent.id === 'producer') queue = [agent, ...session.agents.slice(1)]
+    }
+
+    if (!final) {
+      const latest = latestLyricMessage()
+      if (latest && looksLikeCompleteLyrics(latest.content) && /(?:use|full|complete|final|lyrics|song)/i.test(userText)) {
+        final = latest.content
+      }
     }
 
     if (final) {
