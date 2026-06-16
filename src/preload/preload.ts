@@ -22,11 +22,18 @@ const api: DoReMiApi = {
   reloadPreferredLm: () => ipcRenderer.invoke('engine:lm:reload'),
   openModelFolder: (modelId) => ipcRenderer.invoke('engine:model:openFolder', modelId),
   downloadModel: (modelId) => ipcRenderer.invoke('engine:model:download', modelId),
+  test4BModels: () => ipcRenderer.invoke('models:test4B'),
+  getResourceStatus: () => ipcRenderer.invoke('resources:status'),
+  setResourceMode: (mode) => ipcRenderer.invoke('resources:setMode', mode),
   searchLibrary: () => ipcRenderer.invoke('library:search'),
   renameSong: (id, title) => ipcRenderer.invoke('library:rename', id, title),
   toggleSongFavorite: (id) => ipcRenderer.invoke('library:favorite', id),
   deleteSong: (id) => ipcRenderer.invoke('library:delete', id),
   showSongInFolder: (id) => ipcRenderer.invoke('library:showInFolder', id),
+  generateCover: (request) => ipcRenderer.invoke('cover:generate', request),
+  getCoverStatus: (songId) => ipcRenderer.invoke('cover:status', songId),
+  cancelCover: (songId) => ipcRenderer.invoke('cover:cancel', songId),
+  openCoverFolder: () => ipcRenderer.invoke('cover:openFolder'),
   getPresets: () => ipcRenderer.invoke('presets:list'),
   getLicenses: () => ipcRenderer.invoke('licenses:list'),
   createGeneration: (request) => ipcRenderer.invoke('generation:create', request),
@@ -37,6 +44,7 @@ const api: DoReMiApi = {
   getWriterAvailability: () => ipcRenderer.invoke('writer:availability'),
   listWriterModels: () => ipcRenderer.invoke('writer:models'),
   pullOllamaModel: (model) => ipcRenderer.invoke('writer:pullModel', model),
+  cancelWriter: () => ipcRenderer.invoke('writer:cancel'),
   analyzeLyrics: (input) => ipcRenderer.invoke('writer:analyzeLyrics', input),
   rewriteLyrics: (input) => ipcRenderer.invoke('writer:rewriteLyrics', input),
   startWritersRoom: (input) => ipcRenderer.invoke('room:start', input),
@@ -72,7 +80,7 @@ const api: DoReMiApi = {
   generateStyleForIdea: (input) => ipcRenderer.invoke('writer:generateStyleForIdea', input),
   getConductorState: () => ipcRenderer.invoke('conductor:state'),
   onConductorState: (callback) => {
-    const handler = (_event: Electron.IpcRendererEvent, state: 'idle' | 'writer' | 'engine') => callback(state)
+    const handler = (_event: Electron.IpcRendererEvent, state: 'idle' | 'writer' | 'engine' | 'cover') => callback(state)
     ipcRenderer.on('conductor:state', handler)
     return () => { ipcRenderer.off('conductor:state', handler) }
   },

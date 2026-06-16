@@ -258,6 +258,10 @@ function normalizeWriterProgress(event: string | WriterProgressEvent): WriterPro
   return typeof event === 'string' ? { stage: event, note: progressNote(event) } : event
 }
 
+function qualityReadyForAce(report: LyricsQualityReport | null | undefined) {
+  return Boolean(report?.generationGate?.ready || report?.verdict === 'pass')
+}
+
 export function buildSongIntent(s: StudioStore): SongIntent {
   const rawIdea = s.songIdea.trim()
   const styleCaption = s.styleText.trim()
@@ -290,7 +294,21 @@ export function buildSongIntent(s: StudioStore): SongIntent {
 function beginPolling(task: GenerationTask) {
   const aceId = task.aceTaskId
   if (!aceId) return
-  const meta = { title: task.request.title, mode: task.request.mode }
+  const meta = {
+    title: task.request.title,
+    mode: task.request.mode,
+    prompt: task.request.blueprint?.caption || task.request.prompt,
+    lyrics: task.request.lyrics || task.request.blueprint?.lyrics || '',
+    tags: [
+      ...task.request.structure,
+      task.request.mode,
+      task.request.language,
+      task.request.performancePreset,
+    ].filter(Boolean),
+    bpm: task.request.blueprint?.bpm ?? null,
+    keyscale: task.request.blueprint?.keyscale ?? null,
+    duration: task.request.duration,
+  }
   let pollFailures = 0
   const timer = window.setInterval(async () => {
     let result: GenerationPollResult | undefined
@@ -483,9 +501,38 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
   },
   randomIdea: async () => {
     const s = get()
+    const hasWork = Boolean(
+      s.songTitle.trim() ||
+      s.songIdea.trim() ||
+      s.styleText.trim() ||
+      s.lyrics.trim() ||
+      s.blueprint ||
+      s.lyricsQuality ||
+      selectedTags(s).length,
+    )
+    if (hasWork && !confirm('Random Idea will clear the current studio title, idea, style, lyrics, tags, blueprint, and quality report before making something new. Continue?')) {
+      return
+    }
     set({ conceptBusy: true })
     useUiStore.getState().toast(s.thinkingPower >= 3 ? 'Dreaming up a concept (deep thinking)…' : 'Dreaming up a fresh concept…')
     try {
+      set({
+        songTitle: '',
+        songIdea: '',
+        styleText: '',
+        lyrics: '',
+        pickedGenres: [],
+        pickedVibes: [],
+        pickedVocals: [],
+        pickedInstruments: [],
+        pickedDrums: [],
+        pickedProduction: [],
+        pickedEras: [],
+        pickedCustomTags: [],
+        pickedStructure: ['Intro', 'Verse', 'Chorus'],
+        actionQueue: [],
+        ...clearBlueprintState(),
+      })
       const concept = await window.doReMi.generateConceptIdea({
         think: s.thinkingPower >= 3,
         model: s.writerModel === 'auto' || s.writerModel === 'engine' ? undefined : s.writerModel,
@@ -610,17 +657,21 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
       blueprintDrafts: [],
     })
     try {
-      // ACE's LM plans the music (caption, BPM, key, duration). The words
-      // ALWAYS go through the big local writer for vocal songs: qwen3 drafts,
-      // critiques its own draft, then rewrites. Existing lyrics (hand-written
-      // or from an earlier blueprint) are handed to it as a draft to improve.
-      // The 0.6B engine lyrics are only the emergency fallback.
+      // ACE's LM plans the music (caption, BPM, key, duration). For vocal
+      // songs, DoReMii still quality-gates every lyric source. "engine" means
+      // ACE gets first draft rights; it does not mean raw engine lyrics bypass
+      // the Ready for ACE checks.
       const wantsLyrics = s.vocalMode === 'vocals' && s.writerModel !== 'engine'
       const writer = wantsLyrics ? await window.doReMi.getWriterAvailability() : null
       let writerFailure: string | null = writer && !writer.available ? writer.reason : null
       const engineReady = useAppStore.getState().engine.health === 'ready'
 
-      const blueprintPromise = engineReady
+      // When the local writer is available it produces the lyrics, so DON'T also
+      // fire ACE's create_sample concurrently - on 8 GB both page to RAM and
+      // crawl. We derive the caption from the style text and let ACE auto-fill
+      // BPM/key at generation. ACE's blueprint call is only used when there's no
+      // writer (instrumental / engine-LM mode).
+      const blueprintPromise = (engineReady && !writer?.available)
         ? window.doReMi.createBlueprint({
             query: idea,
             instrumental: s.vocalMode === 'instrumental',
@@ -639,6 +690,10 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
             vocalLanguage: language,
             instrumental: s.vocalMode === 'instrumental',
             lmModel: null,
+            brief: null,
+            hooks: [],
+            sections: [],
+            plan: null,
             raw: { source: 'doremii-writer-only', reason: 'ACE engine was not ready' },
             createdAt: new Date().toISOString(),
           })
@@ -683,9 +738,89 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
         offProgress()
       }
 
+      if (s.vocalMode === 'vocals' && s.writerModel === 'engine') {
+        const engineLyrics = blueprint.lyrics?.trim() || ''
+        if (engineLyrics) {
+          set((current) => ({
+            writerStage: 'checking engine lyrics',
+            writerStageStartedAt: Date.now(),
+            blueprintNotes: current.blueprintNotes.includes('Checking ACE engine lyrics against the same quality gate.')
+              ? current.blueprintNotes
+              : [...current.blueprintNotes, 'Checking ACE engine lyrics against the same quality gate.'].slice(-8),
+          }))
+          const engineQuality = await window.doReMi.analyzeLyrics({
+            lyrics: engineLyrics,
+            idea: intent.idea,
+            model: undefined,
+            intent,
+          }).catch((error) => {
+            writerFailure = error instanceof Error ? error.message : String(error)
+            return null
+          })
+          if (engineQuality && qualityReadyForAce(engineQuality)) {
+            craft = {
+              lyrics: engineLyrics,
+              draft: engineLyrics,
+              drafts: [],
+              critique: engineQuality.modelCritique || 'ACE engine lyrics passed DoReMii local quality checks.',
+              quality: engineQuality,
+              model: blueprint.lmModel || 'ACE engine LM',
+              createdAt: new Date().toISOString(),
+              plan: blueprint.plan ?? undefined,
+              brief: blueprint.brief ?? undefined,
+              hooks: blueprint.hooks ?? [],
+              sections: blueprint.sections ?? [],
+            }
+          } else {
+            set((current) => ({
+              writerStage: 'repairing engine lyrics',
+              writerStageStartedAt: Date.now(),
+              blueprintNotes: current.blueprintNotes.includes('ACE lyrics needed repair, so DoReMii is preserving usable lines and fixing weak sections.')
+                ? current.blueprintNotes
+                : [...current.blueprintNotes, 'ACE lyrics needed repair, so DoReMii is preserving usable lines and fixing weak sections.'].slice(-8),
+            }))
+            craft = await window.doReMi.rewriteLyrics({
+              lyrics: engineLyrics,
+              idea: intent.idea,
+              instruction: 'Repair this ACE engine lyric draft into a complete, relatable, singable full song. Preserve any strong on-topic bars, but fix missing sections, weak hooks, bad rhyme flow, generic lines, and any non-sung text.',
+              model: undefined,
+              intent,
+            }).catch((error) => {
+              writerFailure = error instanceof Error ? error.message : String(error)
+              useAppStore.getState().pushLog(`ACE lyric repair failed: ${writerFailure}`)
+              return engineQuality
+                ? {
+                    lyrics: engineLyrics,
+                    draft: engineLyrics,
+                    drafts: [],
+                    critique: engineQuality.modelCritique || writerFailure || 'ACE engine lyrics could not be repaired.',
+                    quality: engineQuality,
+                    model: blueprint.lmModel || 'ACE engine LM',
+                    createdAt: new Date().toISOString(),
+                    plan: blueprint.plan ?? undefined,
+                    brief: blueprint.brief ?? undefined,
+                    hooks: blueprint.hooks ?? [],
+                    sections: blueprint.sections ?? [],
+                  }
+                : null
+            })
+          }
+        } else {
+          writerFailure = 'ACE engine returned no vocal lyrics.'
+        }
+      }
+
       let merged = craft?.lyrics.trim()
-        ? { ...blueprint, instrumental: false, lyrics: craft.lyrics.trim() }
-        : { ...blueprint, instrumental: s.vocalMode === 'instrumental', lyrics: s.vocalMode === 'instrumental' ? '[Instrumental]' : '' }
+        ? {
+            ...blueprint,
+            instrumental: false,
+            lyrics: craft.lyrics.trim(),
+            brief: craft.brief ?? blueprint.brief ?? null,
+            hooks: craft.hooks ?? blueprint.hooks ?? [],
+            sections: craft.sections ?? blueprint.sections ?? [],
+            plan: craft.plan ?? blueprint.plan ?? null,
+          }
+        : { ...blueprint, instrumental: s.vocalMode === 'instrumental', lyrics: s.vocalMode === 'instrumental' ? '[Instrumental]' : '', brief: blueprint.brief ?? null, hooks: blueprint.hooks ?? [], sections: blueprint.sections ?? [], plan: blueprint.plan ?? null }
 
       // Reconcile caption + metadata around the final lyrics via ACE's
       // /format_input. The engine can't resolve caption-vs-lyrics conflicts at
@@ -712,27 +847,31 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
             keyscale: harmonized.keyscale || merged.keyscale,
             timesignature: harmonized.timesignature || merged.timesignature,
             duration: harmonized.duration ?? merged.duration,
+            plan: merged.plan ?? null,
           }
         }
       }
+      // Score-and-advise: only a TRUE failure (no lyrics at all) blocks. Lower
+      // quality lyrics are shown with their score so the user can edit, accept,
+      // run Deep Cook, or Fix Issues - their call, not a hard gate.
       const failedVocalLyrics = s.vocalMode === 'vocals' && !craft?.lyrics.trim()
+      const score = craft?.quality?.score
       set({
         blueprint: failedVocalLyrics ? null : merged,
         lyricsCraft: craft ?? null,
         lyricsQuality: craft?.quality ?? null,
         blueprintStatus: failedVocalLyrics ? 'error' : 'ready',
-        // Surface a writer fallback persistently in the panel, not just a toast.
         blueprintError: failedVocalLyrics
-          ? `The lyric writer did not produce usable vocal lyrics, so DoReMii blocked the blueprint instead of falling back to instrumental output. Reason: ${writerFailure || 'unknown reason'}. Try Reroll, qwen3:14b, qwen3:8b, or write lyrics manually.`
+          ? `The lyric writer could not produce any lyrics. Reason: ${writerFailure || 'unknown'}. Try Reroll, switch the writer model, or write lyrics manually.`
           : null,
         writerStage: null,
         writerStageStartedAt: null,
         blueprintDrafts: craft?.drafts?.length ? craft.drafts : get().blueprintDrafts,
       })
       useUiStore.getState().toast(craft
-        ? `Blueprint ready - lyrics written by ${craft.model}${engineReady ? ' with engine metadata' : ' while ACE warms'}`
+        ? `Blueprint ready${typeof score === 'number' ? ` (${score}/100)` : ''} - lyrics by ${craft.model}. Edit, accept, or run Deep Cook to refine.`
         : failedVocalLyrics
-          ? 'Lyrics failed quality checks - blueprint blocked'
+          ? 'The writer returned no lyrics - try Reroll or write them manually'
           : 'Instrumental blueprint ready to review')
 
       // Auto-name: if the user hasn't titled the song, name it from the fresh
@@ -798,7 +937,7 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
       })
       if (s.blueprint) {
         set({
-          blueprint: { ...s.blueprint, lyrics: craft.lyrics, instrumental: false },
+          blueprint: { ...s.blueprint, lyrics: craft.lyrics, instrumental: false, plan: craft.plan ?? s.blueprint.plan ?? null },
           lyricsCraft: craft,
           lyricsQuality: craft.quality,
           blueprintStatus: 'ready',
@@ -827,6 +966,12 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
       useUiStore.getState().toast('Vocal blueprint needs lyrics before it can be accepted')
       return
     }
+    // Score-and-advise: low-quality lyrics no longer block acceptance. Just
+    // nudge the user; they can Fix Issues / Deep Cook if they want better.
+    if (get().vocalMode === 'vocals' && !qualityReadyForAce(get().lyricsQuality)) {
+      const score = get().lyricsQuality?.score
+      useUiStore.getState().toast(`Accepted${typeof score === 'number' ? ` (${score}/100)` : ''} - run Fix Issues or Deep Cook for stronger lyrics`)
+    }
     set({
       blueprintStatus: 'accepted',
       styleText: b.caption || get().styleText,
@@ -843,7 +988,10 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
     set({ ...clearBlueprintState() })
     useUiStore.getState().toast('Blueprint discarded')
   },
-  resetBlueprint: () => set({ ...clearBlueprintState() }),
+  resetBlueprint: () => {
+    void window.doReMi.cancelWriter?.().catch(() => undefined)
+    set({ ...clearBlueprintState() })
+  },
   resetStudio: () => {
     set({
       songTitle: '',
@@ -874,6 +1022,12 @@ export const useStudioStore = create<StudioStore>((set, get) => ({
     if (s.vocalMode === 'vocals' && !finalLyrics) {
       useUiStore.getState().toast('Generate and accept a blueprint, or write lyrics first')
       return
+    }
+    // Score-and-advise: generation is the user's call. A low quality score
+    // warns but never blocks - they chose to generate.
+    if (s.vocalMode === 'vocals' && !qualityReadyForAce(s.lyricsQuality)) {
+      const score = s.lyricsQuality?.score
+      useUiStore.getState().toast(`Generating with current lyrics${typeof score === 'number' ? ` (${score}/100)` : ''} - you can refine and regenerate`)
     }
 
     // Auto-name when the field was left empty or on a default: read the final

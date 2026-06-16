@@ -1,5 +1,6 @@
 import { BrowserWindow } from 'electron'
 import type { ConductorState } from '../shared/types.js'
+import { getEngineSettings } from './modelSettings.js'
 
 /** Phase 3 - VRAM Conductor.
  *
@@ -69,7 +70,25 @@ export async function withWriter<T>(fn: () => Promise<T>): Promise<T> {
 /** Mark a song generation as starting: sleep Ollama, claim the GPU. */
 export async function beginEngineJob(): Promise<void> {
   setConductorState('engine')
-  await sleepOllama()
+  const mode = getEngineSettings().resourceMode
+  if (mode === 'keep_usable' || mode === 'balanced') {
+    await sleepOllama()
+  }
+}
+
+export async function withCover<T>(fn: () => Promise<T>): Promise<T> {
+  if (current === 'engine') {
+    throw new Error('Music generation is running. Cover art will wait until the song finishes.')
+  }
+  const previous = current
+  setConductorState('cover')
+  try {
+    const mode = getEngineSettings().resourceMode
+    if (mode === 'keep_usable') await sleepOllama()
+    return await fn()
+  } finally {
+    if (current === 'cover') setConductorState(previous)
+  }
 }
 
 /** A generation finished (or failed) - release the conductor. */

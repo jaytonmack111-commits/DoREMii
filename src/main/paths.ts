@@ -15,6 +15,7 @@ export function getDoReMiPaths() {
     exports: path.join(musicRoot, 'Exports'),
     engineArtifacts: path.join(musicRoot, 'Engine Artifacts'),
     imports: path.join(musicRoot, 'Imports'),
+    covers: path.join(musicRoot, 'Covers'),
     aceImports: path.join(app.getPath('music'), 'ACE-Step', 'Songs'),
   }
 }

@@ -92,10 +92,12 @@ export function StudioPage() {
   const durationConfig = DURATION_MODES[durationMode]
   const hasLyricsForVocals = vocalMode === 'instrumental' || Boolean(lyrics.trim()) || (blueprintStatus === 'accepted' && Boolean(blueprint?.lyrics.trim()))
   const blueprintHasLyrics = Boolean(blueprint?.lyrics.trim() && blueprint.lyrics.trim() !== '[Instrumental]')
-  const canAcceptBlueprint = Boolean(blueprint && blueprintStatus !== 'accepted' && (vocalMode === 'instrumental' || blueprintHasLyrics))
+  const readyForAce = vocalMode === 'instrumental' || Boolean(lyricsQuality?.generationGate?.ready || lyricsQuality?.verdict === 'pass')
+  const gateReasons = lyricsQuality?.generationGate?.reasons ?? lyricsQuality?.issues ?? []
+  const canAcceptBlueprint = Boolean(blueprint && blueprintStatus !== 'accepted' && (vocalMode === 'instrumental' || (blueprintHasLyrics && readyForAce)))
   const activeEngineJob = generating || tasks.some((task) => !['succeeded', 'failed', 'error'].includes(task.status))
   const writerLocked = activeEngineJob
-  const canGenerate = engineReady && !editing && !activeEngineJob && hasLyricsForVocals
+  const canGenerate = engineReady && !editing && !activeEngineJob && hasLyricsForVocals && readyForAce
   const filter = tagFilter.trim().toLowerCase()
   const tagCount = pickedGenres.length + pickedVibes.length + pickedVocals.length + pickedInstruments.length
     + pickedDrums.length + pickedProduction.length + pickedEras.length + pickedCustomTags.length
@@ -148,6 +150,7 @@ export function StudioPage() {
     if (generating) return 'Submitting...'
     if (editing) return 'Needs a source track'
     if (!hasLyricsForVocals) return 'Accept a blueprint first'
+    if (!readyForAce) return 'Fix lyrics first'
     if (engineReady) return 'Generate Music'
     if (engineWarming) return 'Engine warming up...'
     if (engine.state === 'error') return 'Engine needs attention'
@@ -385,6 +388,117 @@ export function StudioPage() {
                   </span>
                   {blueprintStatus === 'accepted' && <span className="accepted-pill"><Check size={12} /> Accepted</span>}
                 </div>
+                {(lyricsCraft?.plan || blueprint.plan) && (
+                  <details className="lyric-plan-card" open>
+                    <summary>
+                      <strong>Lyric plan</strong>
+                      <span>The writer must follow this before final lyrics can pass.</span>
+                    </summary>
+                    {(() => {
+                      const plan = lyricsCraft?.plan || blueprint.plan
+                      if (!plan) return null
+                      return (
+                        <div className="lyric-plan-body">
+                          <div className="plan-summary-grid">
+                            <span><em>Premise</em>{plan.songPremise}</span>
+                            <span><em>Listener situation</em>{plan.relatableListenerSituation}</span>
+                            <span><em>Vibe</em>{plan.vibe}</span>
+                            <span><em>Genre</em>{plan.genreFusion ? `${plan.genre} + ${plan.genreFusion}` : plan.genre}</span>
+                            <span><em>Point of view</em>{plan.pointOfView}</span>
+                            <span><em>Hook target</em>{plan.hookPhraseTarget}</span>
+                          </div>
+                          <div className="section-score-grid">
+                            {plan.sectionGoals.map((section) => (
+                              <span className="section-score keep" key={`${section.section}-${section.purpose}`}>
+                                <em>{section.section}</em>
+                                <b>{section.rhymeScheme}</b>
+                                <small>{section.lineCount} lines · {section.syllableMin}-{section.syllableMax} syl</small>
+                              </span>
+                            ))}
+                          </div>
+                          {!!plan.forbiddenDriftWords.length && (
+                            <div className="chip-wrap">
+                              {plan.forbiddenDriftWords.slice(0, 8).map((word) => <span className="chip tiny danger" key={word}>avoid {word}</span>)}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
+                  </details>
+                )}
+                {(lyricsCraft?.brief || blueprint.brief || lyricsCraft?.hooks?.length || blueprint.hooks?.length || lyricsCraft?.sections?.length || blueprint.sections?.length || lyricsCraft?.repairs?.length) && (
+                  <div className="pipeline-card-grid">
+                    {(lyricsCraft?.brief || blueprint.brief) && (() => {
+                      const brief = lyricsCraft?.brief || blueprint.brief
+                      if (!brief) return null
+                      return (
+                        <details className="pipeline-card" open>
+                          <summary>
+                            <strong>Song Brief</strong>
+                            <span>{brief.quality.songShapeReadiness}/100 shape</span>
+                          </summary>
+                          <div className="plan-summary-grid">
+                            <span><em>Premise</em>{brief.premise}</span>
+                            <span><em>Narrator</em>{brief.narrator}</span>
+                            <span><em>Listener situation</em>{brief.listenerSituation}</span>
+                            <span><em>Conflict</em>{brief.emotionalConflict}</span>
+                            <span><em>Hook promise</em>{brief.hookPromise}</span>
+                            <span><em>Outro resolution</em>{brief.outroResolution}</span>
+                          </div>
+                          <div className="chip-wrap">
+                            {brief.concreteImages.map((image) => <span className="chip tiny on" key={image}>{image}</span>)}
+                            {brief.forbiddenDrift.slice(0, 5).map((word) => <span className="chip tiny danger" key={word}>avoid {word}</span>)}
+                          </div>
+                        </details>
+                      )
+                    })()}
+                    {!!(lyricsCraft?.hooks?.length || blueprint.hooks?.length) && (
+                      <details className="pipeline-card" open>
+                        <summary>
+                          <strong>Hook Candidates</strong>
+                          <span>{(lyricsCraft?.hooks || blueprint.hooks || []).length} scored</span>
+                        </summary>
+                        <div className="section-score-grid">
+                          {(lyricsCraft?.hooks || blueprint.hooks || []).map((hook) => (
+                            <span className={`section-score ${hook.selected ? 'keep' : hook.score >= 70 ? 'rewrite' : 'expand'}`} key={hook.id}>
+                              <em>{hook.label}{hook.selected ? ' selected' : ''}</em>
+                              <b>{hook.score}</b>
+                              <small>{hook.lines.join(' / ')}</small>
+                            </span>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                    {!!(lyricsCraft?.sections?.length || blueprint.sections?.length) && (
+                      <details className="pipeline-card">
+                        <summary>
+                          <strong>Section Assembly</strong>
+                          <span>{(lyricsCraft?.sections || blueprint.sections || []).length} sections</span>
+                        </summary>
+                        <div className="section-score-grid">
+                          {(lyricsCraft?.sections || blueprint.sections || []).map((section) => (
+                            <span className={`section-score ${section.verdict}`} key={`${section.section}-${section.score}`}>
+                              <em>{section.section}</em>
+                              <b>{section.score}</b>
+                              <small>{section.repairReason || section.purpose}</small>
+                            </span>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                    {!!lyricsCraft?.repairs?.length && (
+                      <details className="pipeline-card">
+                        <summary>
+                          <strong>Auto Repairs</strong>
+                          <span>{lyricsCraft.repairs.length} pass{lyricsCraft.repairs.length === 1 ? '' : 'es'}</span>
+                        </summary>
+                        <ul className="quality-list good">
+                          {lyricsCraft.repairs.map((repair) => <li key={repair}>{repair}</li>)}
+                        </ul>
+                      </details>
+                    )}
+                  </div>
+                )}
                 <div className="blueprint-columns">
                   <label className="stacked">
                     Style Caption - edit freely
@@ -444,8 +558,17 @@ export function StudioPage() {
                     </div>
                     <div className="quality-main">
                       <div className="quality-head">
-                        <strong>{lyricsQuality.verdict === 'pass' ? 'Lyrics pass' : lyricsQuality.verdict === 'needs_work' ? 'Needs polish' : 'Do not generate yet'}</strong>
+                        <strong>{readyForAce ? 'Ready for ACE' : lyricsQuality.verdict === 'pass' ? 'Lyrics pass' : lyricsQuality.verdict === 'needs_work' ? 'Needs repair' : 'Do not generate yet'}</strong>
                         <span>{lyricsQuality.summary}</span>
+                      </div>
+                      <div className={`adherence-card ${readyForAce ? 'pass' : 'fail'}`}>
+                        <strong>{readyForAce ? 'Generation gate: ready' : 'Generation gate: blocked'}</strong>
+                        <span>{readyForAce ? 'These lyrics can be sent to the music engine.' : 'The writer will use these blocker reasons when you click Fix Issues.'}</span>
+                        {!readyForAce && gateReasons.length > 0 && (
+                          <ul>
+                            {gateReasons.slice(0, 4).map((reason) => <li key={reason}>{reason}</li>)}
+                          </ul>
+                        )}
                       </div>
                       <div className="quality-metrics">
                         <span>{lyricsQuality.structure.sungLineCount} sung lines</span>
@@ -509,6 +632,26 @@ export function StudioPage() {
                           </div>
                         </div>
                       ) : null}
+                      {lyricsQuality.planCompliance && (
+                        <div className="structure-lock">
+                          <strong>Plan compliance</strong>
+                          <div className="chip-wrap">
+                            <span className={`chip tiny ${lyricsQuality.planCompliance.rhymeScheme === 'pass' ? 'on' : lyricsQuality.planCompliance.rhymeScheme === 'fail' ? 'danger' : 'warn'}`}>
+                              rhyme {lyricsQuality.planCompliance.rhymeScheme}
+                            </span>
+                            <span className={`chip tiny ${lyricsQuality.planCompliance.syllablePlan === 'pass' ? 'on' : lyricsQuality.planCompliance.syllablePlan === 'fail' ? 'danger' : 'warn'}`}>
+                              syllables {lyricsQuality.planCompliance.syllablePlan}
+                            </span>
+                            <span className={`chip tiny ${lyricsQuality.planCompliance.vibeMatch === 'pass' ? 'on' : lyricsQuality.planCompliance.vibeMatch === 'fail' ? 'danger' : 'warn'}`}>
+                              vibe {lyricsQuality.planCompliance.vibeMatch}
+                            </span>
+                            <span className={`chip tiny ${lyricsQuality.planCompliance.relatabilityScore >= 70 ? 'on' : lyricsQuality.planCompliance.relatabilityScore < 45 ? 'danger' : 'warn'}`}>
+                              relatable {lyricsQuality.planCompliance.relatabilityScore}/100
+                            </span>
+                            {lyricsQuality.planCompliance.issues.slice(0, 4).map((issue) => <span className="chip tiny warn" key={issue}>{issue}</span>)}
+                          </div>
+                        </div>
+                      )}
                       {lyricsQuality.lineDecisions?.length ? (
                         <details className="line-locks">
                           <summary>Locked bars and repair map</summary>
@@ -840,7 +983,7 @@ export function StudioPage() {
           })}
           {songs.slice(0, 12).map((song, index) => (
             <article className="creation-card" key={song.id} onClick={() => playSong(song)}>
-              <div className="creation-cover"><Cover hue={(index * 52 + 280) % 360} size="md" label /></div>
+              <div className="creation-cover"><Cover hue={(index * 52 + 280) % 360} size="md" label src={song.coverArtPath} /></div>
               <strong className="ellipsis">{song.title}</strong>
               <small className="ellipsis">{song.mode}</small>
             </article>

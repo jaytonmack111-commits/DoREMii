@@ -12,7 +12,7 @@ function check(id: string, label: string, ok: boolean, detail: string, warn = fa
 
 export async function runSetupCheck(): Promise<SetupCheckResult> {
   const folders = getDoReMiPaths()
-  for (const folder of [folders.musicRoot, folders.songs, folders.projects, folders.exports, folders.engineArtifacts, folders.imports]) {
+  for (const folder of [folders.musicRoot, folders.songs, folders.projects, folders.exports, folders.engineArtifacts, folders.imports, folders.covers]) {
     fs.mkdirSync(folder, { recursive: true })
   }
 
@@ -50,6 +50,7 @@ export async function runSetupCheck(): Promise<SetupCheckResult> {
       exports: folders.exports,
       engineArtifacts: folders.engineArtifacts,
       imports: folders.imports,
+      covers: folders.covers,
     },
   }
 }

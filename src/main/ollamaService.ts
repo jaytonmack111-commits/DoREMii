@@ -1,15 +1,21 @@
 import { BrowserWindow } from 'electron'
 import { spawn } from 'node:child_process'
-import type { LyricsCraftResult, LyricsDraftSnapshot, LyricsQualityReport, SongIntent, WriterProgressEvent } from '../shared/types.js'
+import type { HookCandidate, LyricPlan, LyricPlanSection, LyricsCraftResult, LyricsDraftSnapshot, LyricsQualityReport, SectionDraft, SongBrief, SongIntent, WriterProgressEvent } from '../shared/types.js'
 import { getEngineSettings } from './modelSettings.js'
 
 const OLLAMA_URL = 'http://127.0.0.1:11434'
-/** Default writer follows the user's observed best local lyric behavior; 14B stays available for deep rewrite/critique. */
-const WRITER_MODELS = ['qwen3:8b', 'qwen3:14b']
-const ROOM_MODELS = ['qwen3:4b', 'qwen3:1.7b', 'llama3.2:3b', 'qwen3:8b', 'qwen3:14b']
+/** Fast-first fallback order: 4b fits alongside ACE and writes a full song in
+ *  one pass; bigger models stay available for deep cook; qwen2.5:1.5b is the
+ *  lightest option (non-thinking, very fast) for low-VRAM moments. */
+const WRITER_MODELS = ['qwen3:4b', 'qwen3:8b', 'qwen3:14b', 'qwen2.5:1.5b']
+const ROOM_MODELS = ['qwen3:4b', 'qwen2.5:1.5b', 'qwen3:1.7b', 'llama3.2:3b', 'qwen3:8b', 'qwen3:14b']
 const THINK_CTX = 16384
 const CHAT_CTX = 8192
-const MAX_OUTPUT_TOKENS = 2800
+const MAX_OUTPUT_TOKENS = 4200
+const LONG_THINK_CTX = 32768
+const EXPERIMENTAL_THINK_CTX = 65536
+let activeWriterAbort: AbortController | null = null
+let writerCancelRequested = false
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -23,8 +29,29 @@ function tokenBudgetFor(signalLabel: string, think: boolean) {
   if (/scene/i.test(signalLabel)) return 650
   if (/title/i.test(signalLabel)) return 80
   if (/concept/i.test(signalLabel)) return 700
-  if (/rewrite|draft/i.test(signalLabel)) return 1500
-  return think ? 1500 : 900
+  if (/rewrite|draft/i.test(signalLabel)) return 3000
+  if (/final/i.test(signalLabel)) return 1800
+  return think ? 2200 : 1000
+}
+
+function contextWindowFor(model: string, think: boolean) {
+  const settings = getEngineSettings()
+  const preset = settings.ollamaContextPreset ?? 'long'
+  if (!think) return preset === 'experimental' ? 16384 : CHAT_CTX
+  const requested = preset === 'experimental' ? EXPERIMENTAL_THINK_CTX : preset === 'long' ? LONG_THINK_CTX : THINK_CTX
+  // Keep PC Usable still allows longer context for small writers, but avoids
+  // making 14B monopolize memory unless the user explicitly enters experimental mode.
+  if (settings.resourceMode === 'keep_usable' && /14b/i.test(model) && preset !== 'experimental') return THINK_CTX
+  return requested
+}
+
+export function cancelWriterJobs() {
+  if (!activeWriterAbort) return { canceled: false }
+  writerCancelRequested = true
+  activeWriterAbort.abort()
+  activeWriterAbort = null
+  emitWriterProgress({ stage: 'canceled', note: 'Writer canceled by user.' })
+  return { canceled: true }
 }
 
 // Tuned to ACE-Step's official musicians guide: lyrics are a TEMPORAL SCRIPT
@@ -53,7 +80,10 @@ ACE FORMAT RULES (follow exactly):
 - UPPERCASE words mean shouted/intense delivery: use only at true peaks.
 - The chorus may repeat its hook; verses must never repeat lines verbatim; never repeat a whole section's text outside the chorus.
 - The outro must be sung closure, not a tiny label or a tossed-off line. For normal songs, write 3-4 concise lines that resolve the hook or leave a memorable final image.
-- Write ONLY the lyrics with their tags. No commentary, no titles, no markdown (** or #), no screenplay narration ("phone buzzes", "the crowd roars", "her voice cuts the heat") - every non-tag line is words the singer literally sings.`
+- Duration matters: a 3-5 minute vocal song needs enough lyric material to sustain the audio. Do not submit a two-line chorus or tiny verse sketch for a full song. Full songs usually need 24-40 sung lines across the required sections.
+- If a draft is allowed to run for a long time, spend the time improving actual lyrics: choose stronger hooks, preserve good bars, repair weak lines, expand short sections, and re-check topic/flow. Never spend long runs on private reasoning that does not improve the visible song.
+- When the current task asks for JSON, return JSON only. Inside the JSON, the "lyrics" field must contain ONLY the lyrics with their tags.
+- When the current task does not ask for JSON, write ONLY the lyrics with their tags. No commentary, no titles, no markdown (** or #), no screenplay narration ("phone buzzes", "the crowd roars", "her voice cuts the heat") - every non-tag line is words the singer literally sings.`
 
 const SCENE_SYSTEM = `You are a story developer for a hit songwriting team. Given a song idea, invent the CONCRETE story the song will tell. Answer briefly:
 1. CORE PREMISE: the song's subject in one plain sentence.
@@ -105,6 +135,28 @@ NOTES:
 - short concrete note
 - short concrete note`
 
+const MUSIC_THEORY_SANDWICH = `SONGCRAFT / PROSODY LAYER:
+- Start with a singable hook target before writing verses. A chorus without a memorable repeated idea is not finished.
+- Lines should feel like bars: most lines land in 6-10 syllables, with stresses falling near the end of the line. Avoid 14+ syllable mouthfuls unless it is rap and the internal rhythm is clear.
+- Use rhyme as architecture, not decoration: end rhymes, slant rhymes, internal echoes, alliteration, and callbacks should support the hook.
+- Avoid nursery-rhyme sameness. If two consecutive lines perfect-rhyme, the next line should vary rhythm, image, or vowel sound.
+- Verse 1 = situation. Verse 2 = consequence/change. Bridge = turn/reveal. Final chorus = bigger emotional meaning. Outro = clean final image or hook echo.
+- Keep one central metaphor. Do not stack random pretty images. Relatable concrete detail beats abstract poetry.
+- Rap/hip-hop: denser internal rhyme and sharper consonants, 8/16-bar feel, conversational punchlines, no generic inspirational slogans.
+- Country/folk: plainspoken images, story progression, natural speech melody, title/hook payoff, not over-poetic.
+- Pop/R&B: simple memorable hook, smooth vowels, emotional clarity, pre-chorus lift when useful, polished phrasing.
+- Rock/metal/punk: direct verbs, physical energy, chantable chorus, fewer delicate abstractions.
+- Electronic/dance: short rhythmic phrases, repeating hook fragments, kinetic verbs, space for drops and builds.`
+
+const BLUEPRINT_PROMPT_SANDWICH = `BLUEPRINT INTELLIGENCE LAYER:
+- Separate the job into three mental rooms: concept, music, and lyric. Concept decides what the song is about; music decides how it sounds; lyric decides what is literally sung.
+- The idea box is sovereign. Sound/style can change instrumentation, tempo, genre, and mix, but it cannot change the story topic.
+- Every blueprint must have a human anchor: who is singing, who/what they are singing to, what changed, and why the chorus matters.
+- Before drafting lyrics, decide the chorus promise in plain English. If the chorus cannot be explained in one sentence, the song is not planned yet.
+- Every section has a purpose: Verse 1 opens the human situation, Chorus states the hook, Verse 2 adds consequence, Bridge reveals the truth, Final Chorus lands the payoff, Outro leaves the final image.
+- Use a repair mindset: keep strong bars, callbacks, and title-payoff lines. Rewrite weak sections surgically. Do not throw away the whole song unless it is structurally broken.
+- Model compatibility rule: if strict JSON is hard for the current model, plain tagged lyrics are acceptable, but planning notes, critique, rhyme labels, and analysis are never acceptable inside the lyrics.`
+
 export type { ChatMessage }
 
 export async function chatRaw(model: string, messages: ChatMessage[], temperature: number, think: boolean, signalLabel: string): Promise<{ text: string; thinkBlock: string | null }> {
@@ -113,18 +165,21 @@ export async function chatRaw(model: string, messages: ChatMessage[], temperatur
 
 async function chat(model: string, messages: ChatMessage[], temperature: number, think: boolean, signalLabel: string): Promise<{ text: string; thinkBlock: string | null }> {
   const qwenThinkingModel = /^qwen3:/i.test(model)
-  // RELIABILITY: qwen3 small models ignore /no_think and reason in plain
-  // content (no <think> tags), which used to leak into output and get rejected.
-  // Force the NATIVE thinking channel on for qwen3 so reasoning lands in
-  // message.thinking and message.content is always the clean answer. The
-  // requested `think` flag now only sizes the context window.
-  const apiThink = qwenThinkingModel ? true : think
-  const finalMessages = messages
+  // Only thinking models (qwen3, deepseek-r1) accept the `think` flag. Sending
+  // think:true to a non-thinking model (qwen2.5, llama) makes Ollama error, so
+  // those always run plain - which is also faster and leak-free.
+  const apiThink = qwenThinkingModel && think
+  const finalMessages = !apiThink && qwenThinkingModel
+    ? messages.map((message, index) => index === messages.length - 1 && message.role === 'user'
+      ? { ...message, content: `${message.content}\n\n/no_think` }
+      : message)
+    : messages
   // Watchdog: if the model produces NO tokens for this long, it is starved
   // (e.g. ACE holds the VRAM and the model is paging) - abort instead of
   // hanging the whole pipeline for ten minutes.
-  const STALL_TIMEOUT_MS = 120_000
+  const STALL_TIMEOUT_MS = think ? 120_000 : 45_000
   const controller = new AbortController()
+  activeWriterAbort = controller
   let stallTimer = setTimeout(() => controller.abort(), STALL_TIMEOUT_MS)
   const feedWatchdog = () => {
     clearTimeout(stallTimer)
@@ -145,7 +200,7 @@ async function chat(model: string, messages: ChatMessage[], temperature: number,
         keep_alive: '15m',
         options: {
           temperature,
-          num_ctx: think ? THINK_CTX : CHAT_CTX,
+          num_ctx: contextWindowFor(model, think),
           num_predict: Math.min(MAX_OUTPUT_TOKENS, tokenBudgetFor(signalLabel, think)),
         },
       }),
@@ -153,7 +208,7 @@ async function chat(model: string, messages: ChatMessage[], temperature: number,
   } catch (error) {
     clearTimeout(stallTimer)
     if (controller.signal.aborted) {
-      throw new Error(`Ollama ${signalLabel} stalled (no tokens for ${STALL_TIMEOUT_MS / 1000}s) - model ${model} is likely starved for VRAM`, { cause: error })
+      throw new Error(writerCancelRequested ? `Ollama ${signalLabel} canceled by user` : `Ollama ${signalLabel} stalled (no tokens for ${STALL_TIMEOUT_MS / 1000}s) - model ${model} is likely starved for VRAM`, { cause: error })
     }
     throw error
   }
@@ -174,7 +229,7 @@ async function chat(model: string, messages: ChatMessage[], temperature: number,
       ({ done, value } = await reader.read())
     } catch (error) {
       if (controller.signal.aborted) {
-        throw new Error(`Ollama ${signalLabel} stalled (no tokens for ${STALL_TIMEOUT_MS / 1000}s) - model ${model} is likely starved for VRAM`, { cause: error })
+        throw new Error(writerCancelRequested ? `Ollama ${signalLabel} canceled by user` : `Ollama ${signalLabel} stalled (no tokens for ${STALL_TIMEOUT_MS / 1000}s) - model ${model} is likely starved for VRAM`, { cause: error })
       }
       throw error
     }
@@ -199,6 +254,8 @@ async function chat(model: string, messages: ChatMessage[], temperature: number,
   }
   } finally {
     clearTimeout(stallTimer)
+    if (activeWriterAbort === controller) activeWriterAbort = null
+    writerCancelRequested = false
   }
 
   let text = stripReasoning(streamedText.trim())
@@ -228,9 +285,32 @@ export function emitWriterProgress(progress: string | WriterProgressEvent) {
   }
 }
 
+function modelPrefersPlainLyrics(model: string) {
+  return !/^qwen3:/i.test(model) || /^qwen3:4b/i.test(model) || /^llama/i.test(model)
+}
+
+const LYRIC_SECTION_RE = /^\s*\[(?:intro|verse(?:\s*\d+)?|pre-chorus|chorus|hook|bridge|final chorus|outro|drop|breakdown|instrumental|build)[^\]]*\]\s*$/i
+const NON_LYRIC_LINE_RE = /^(?:okay|first,|but wait|now,|alternatively|maybe|for the outro|rhyme\/flow|adherence|score:|verdict:|notes:|critic|local validator|rewrite instruction|requirements?:|the user|looking at|let's|i need|i should|return only|these lines|that'?s|this means|plan violation|prompt adherence|section scores?|line decisions?|song brief|story worksheet|selected hook|approved hook|best hook|hook promise|candidate|the chorus pays off|a professional critic|local validator rejects)\b/i
+
+function sectionNameFromTag(line: string) {
+  return line.match(/^\s*\[([^\]]+)\]\s*$/)?.[1]?.toLowerCase().replace(/\s+/g, ' ').trim() ?? ''
+}
+
+function isSingableLyricLine(line: string) {
+  const trimmed = line.trim().replace(/^[-*]\s*/, '')
+  if (!trimmed) return false
+  if (LYRIC_SECTION_RE.test(trimmed)) return false
+  if (NON_LYRIC_LINE_RE.test(trimmed)) return false
+  if (/^\s*(?:\d+[.)]|[A-F][.)]|hook\s+[a-f])\s+/i.test(trimmed)) return false
+  if (/"[^"]+"/.test(trimmed) && /\b(?:pays off|listener|sing back|hook|title|line)\b/i.test(trimmed)) return false
+  if (/\b(?:as a line the listener can sing back|pays off|hook target|line count target|rhyme\/meter|must include|avoid:|write only|return json|section tag)\b/i.test(trimmed)) return false
+  if (/^\{|\}$/.test(trimmed)) return false
+  return true
+}
+
 /** Clean model formatting tics so ACE gets pure [Tag] + sung-line lyrics. */
 function sanitizeLyrics(text: string) {
-  return text
+  const cleaned = text
     .replace(/\*\*/g, '')                          // markdown bold
     .replace(/^\s*\*\([^)]*\)\*\s*$/gm, '')        // *(stage directions)*
     .replace(/^\s*\*[^*\n]+\*\s*$/gm, '')          // *phone buzzes twice*
@@ -238,10 +318,71 @@ function sanitizeLyrics(text: string) {
     .replace(/^\s*#+\s*/gm, '')                    // markdown headers
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+  const lines: string[] = []
+  let lastSection = ''
+  for (const raw of cleaned.split(/\r?\n/)) {
+    const line = raw.trimEnd()
+    const currentSection = sectionNameFromTag(line)
+    if (currentSection) {
+      if (currentSection === lastSection) continue
+      lastSection = currentSection
+      lines.push(`[${line.match(/^\s*\[([^\]]+)\]\s*$/)?.[1]?.trim() ?? currentSection}]`)
+      continue
+    }
+    if (line.trim() && NON_LYRIC_LINE_RE.test(line.trim())) continue
+    if (/\b(?:the chorus pays off|as a line the listener can sing back|hook promise|story worksheet|selected hook|approved hook)\b/i.test(line)) continue
+    lines.push(line)
+  }
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
-const LYRIC_SECTION_RE = /^\s*\[(?:intro|verse(?:\s*\d+)?|pre-chorus|chorus|hook|bridge|final chorus|outro|drop|breakdown|instrumental|build)[^\]]*\]\s*$/i
-const NON_LYRIC_LINE_RE = /^(?:okay|first,|but wait|now,|alternatively|maybe|for the outro|rhyme\/flow|adherence|score:|verdict:|notes:|critic|local validator|rewrite instruction|requirements?:|the user|looking at|let's|i need|i should|return only|these lines|that'?s|this means)\b/i
+function normalizeSectionLyrics(section: string, raw: string) {
+  const clean = sanitizeLyrics(raw)
+  const wanted = section.toLowerCase().replace(/\s+/g, ' ').trim()
+  const sectionLines = sungLinesBySection(clean)[wanted]
+  if (sectionLines?.length) return sanitizeLyrics(`${sectionTag(section)}\n${sectionLines.join('\n')}`)
+  const singable = clean.split(/\r?\n/).filter((line) => isSingableLyricLine(line))
+  return sanitizeLyrics(`${sectionTag(section)}\n${singable.join('\n')}`)
+}
+
+function extractJsonCandidates(text: string) {
+  const cleaned = stripReasoning(text).trim()
+  const candidates = new Set<string>()
+  const fenced = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/gi) ?? []
+  for (const block of fenced) {
+    const inner = block.replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim()
+    if (inner.startsWith('{')) candidates.add(inner)
+  }
+  if (cleaned.startsWith('{')) candidates.add(cleaned)
+  let depth = 0
+  let start = -1
+  let inString = false
+  let escaped = false
+  for (let i = 0; i < cleaned.length; i += 1) {
+    const char = cleaned[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (char === '\\') escaped = true
+      else if (char === '"') inString = false
+      continue
+    }
+    if (char === '"') {
+      inString = true
+    } else if (char === '{') {
+      if (depth === 0) start = i
+      depth += 1
+    } else if (char === '}') {
+      depth -= 1
+      if (depth === 0 && start >= 0) {
+        candidates.add(cleaned.slice(start, i + 1))
+        start = -1
+      }
+    }
+  }
+  const greedy = cleaned.match(/\{[\s\S]*\}/)?.[0]
+  if (greedy) candidates.add(greedy)
+  return [...candidates]
+}
 
 function extractLyricsOnly(raw: string) {
   const envelope = parseLyricsEnvelope(raw)
@@ -255,27 +396,30 @@ function extractLyricsOnly(raw: string) {
     const trimmed = line.trim()
     if (trimmed && NON_LYRIC_LINE_RE.test(trimmed)) break
     if (/^\s*[-*]\s*(?:the|this|try|maybe|fix|replace|adjust)\b/i.test(trimmed)) break
+    if (trimmed && !LYRIC_SECTION_RE.test(trimmed) && !isSingableLyricLine(trimmed)) break
     kept.push(line.replace(/\s+\([A-Z]\)\s*$/i, ''))
   }
 
   const extracted = sanitizeLyrics(kept.join('\n'))
-  return sungLinesBySection(extracted).untagged?.length ? '' : extracted
+  if (sungLinesBySection(extracted).untagged?.length) return ''
+  const sungLineCount = Object.entries(sungLinesBySection(extracted))
+    .filter(([section]) => section !== 'untagged')
+    .flatMap(([, sectionLines]) => sectionLines)
+    .length
+  return sungLineCount >= 2 ? extracted : ''
 }
 
-function parseLyricsEnvelope(raw: string): { lyrics: string; keptLines?: string[]; rewrittenLines?: string[] } | null {
-  const text = stripReasoning(raw).trim()
-  const candidates = [
-    text,
-    text.match(/\{[\s\S]*\}/)?.[0] ?? '',
-  ].filter(Boolean)
+function parseLyricsEnvelope(raw: string): { lyrics: string; keptLines?: string[]; rewrittenLines?: string[]; plan?: LyricPlan } | null {
+  const candidates = extractJsonCandidates(raw)
   for (const candidate of candidates) {
     try {
-      const parsed = JSON.parse(candidate) as { lyrics?: unknown; keptLines?: unknown; rewrittenLines?: unknown }
+      const parsed = JSON.parse(candidate) as { lyrics?: unknown; keptLines?: unknown; rewrittenLines?: unknown; plan?: unknown }
       if (typeof parsed.lyrics === 'string' && parsed.lyrics.includes('[')) {
         return {
           lyrics: parsed.lyrics,
           keptLines: Array.isArray(parsed.keptLines) ? parsed.keptLines.filter((x): x is string => typeof x === 'string') : undefined,
           rewrittenLines: Array.isArray(parsed.rewrittenLines) ? parsed.rewrittenLines.filter((x): x is string => typeof x === 'string') : undefined,
+          plan: isLyricPlan(parsed.plan) ? parsed.plan : undefined,
         }
       }
     } catch {
@@ -285,11 +429,30 @@ function parseLyricsEnvelope(raw: string): { lyrics: string; keptLines?: string[
   return null
 }
 
-function progressSummary(text: string, max = 260) {
-  return sanitizeLyrics(stripLeakedReasoning(text))
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, max)
+async function repairLyricsEnvelope(model: string, raw: string, brief: string, lyricPlan: LyricPlan, label: string) {
+  const rawText = stripLeakedReasoning(stripReasoning(raw)).slice(0, 5000)
+  const repaired = await chat(model, [
+    { role: 'system', content: SONGWRITER_SYSTEM },
+    {
+      role: 'user',
+      content: `${brief}
+
+The previous ${label} response was malformed or contained planning/critique text instead of clean lyrics.
+
+Bad response to salvage or replace:
+${rawText}
+
+Repair task:
+- If there are usable sung lines, keep the good on-topic bars.
+- If not, write a fresh full lyric from the plan.
+- Follow the lyric plan exactly.
+- Do not include notes, critique, labels like "A/B", explanations, markdown, or prose outside JSON.
+
+Return STRICT JSON only:
+{"plan":${JSON.stringify(lyricPlan)},"lyrics":"[Verse 1]\\n...","keptLines":[],"rewrittenLines":[],"sectionScores":[],"notes":[]}`,
+    },
+  ], 0.65, true, `${label}-repair`)
+  return extractLyricsOnly(repaired.text)
 }
 
 function makeDraftSnapshot(label: string, lyrics: string, note: string, intent?: SongIntent, idea?: string, previousLyrics?: string | null): LyricsDraftSnapshot {
@@ -397,9 +560,10 @@ function hasExpectedSection(sectionNames: string[], expected: string) {
 }
 
 function parseAdherence(text: string): LyricsQualityReport['semanticAdherence'] {
-  const score = Math.max(0, Math.min(100, Number(text.match(/SCORE:\s*(\d+)/i)?.[1] ?? 0)))
+  const scoreMatch = text.match(/SCORE:\s*(\d+)/i)
   const verdictRaw = text.match(/VERDICT:\s*(PASS|NEEDS_WORK|FAIL)/i)?.[1]?.toLowerCase()
-  const verdict = verdictRaw === 'pass' ? 'pass' : verdictRaw === 'needs_work' ? 'needs_work' : 'fail'
+  const score = scoreMatch ? Math.max(0, Math.min(100, Number(scoreMatch[1]))) : 65
+  const verdict = verdictRaw === 'pass' ? 'pass' : verdictRaw === 'fail' ? 'fail' : 'needs_work'
   const notesBlock = text.split(/NOTES:/i)[1] ?? text
   const notes = notesBlock
     .split(/\r?\n/)
@@ -435,10 +599,34 @@ function validateLyrics(lyrics: string, intent?: SongIntent | null, fallbackIdea
     if (!hasVerse2) issues.push('Missing [Verse 2].')
     if (!hasChorus) issues.push('Missing [Chorus].')
   }
-  const minLines = intent?.durationMode === 'sample' ? 2 : intent?.durationMode === 'loop' ? 6 : 16
-  if (allLines.length < minLines) issues.push(`Too short for this ${intent?.durationMode ?? 'song'}; needs at least ${minLines} sung lines.`)
+  const durationMax = Number(intent?.durationMax ?? 150)
+  const minLines = intent?.durationMode === 'sample'
+    ? 2
+    : intent?.durationMode === 'loop'
+      ? 6
+      : durationMax >= 300
+        ? 38
+        : durationMax >= 240
+          ? 32
+          : durationMax >= 180
+            ? 26
+            : durationMax >= 120
+              ? 22
+              : 16
+  if (allLines.length < minLines) issues.push(`Too short for this ${intent?.durationMode ?? 'song'} (${Math.round(durationMax)}s max); needs about ${minLines}+ sung lines or a shorter duration.`)
   if ((intent?.durationMode ?? 'song') === 'song' && expectedSections.includes('outro') && outroLines.length > 0 && outroLines.length < 3) {
     issues.push('Outro is too short; normal songs need 3-4 sung closing lines that resolve the central idea.')
+  }
+  for (const [section, lines] of Object.entries(sections)) {
+    if (/^verse\s*[12]/.test(section) && lines.length > 0 && lines.length < 4) {
+      issues.push(`[${section.replace(/\b\w/g, (char) => char.toUpperCase())}] is too short; verses need at least 4 sung lines.`)
+    }
+    if (/^(chorus|final chorus)/.test(section) && lines.length > 0 && lines.length < 4) {
+      issues.push(`[${section.replace(/\b\w/g, (char) => char.toUpperCase())}] is too short; choruses need at least 4 singable hook lines.`)
+    }
+    if (/^bridge/.test(section) && durationMax >= 120 && lines.length > 0 && lines.length < 4) {
+      issues.push('[Bridge] is too short; full songs need a real turn, usually 4 lines.')
+    }
   }
 
   const screenplayPattern = /\b(?:voice cuts|camera|we see|scene|phone buzz|buzzes|crowd roars|singer enters|vocal enters|begins singing|verse opens|the track|arrangement|instrumental|sfx|stage direction|screenplay)\b/i
@@ -651,12 +839,47 @@ function buildSectionScores(
     })
 }
 
+function buildGenerationGate(report: Omit<LyricsQualityReport, 'generationGate'>): NonNullable<LyricsQualityReport['generationGate']> {
+  const reasons: string[] = []
+  const missing = report.structure.missingSections ?? []
+  const metrics = report.metrics
+  const sectionScores = report.sectionScores ?? []
+  const plan = report.planCompliance
+  const semantic = report.semanticAdherence
+
+  if (missing.some((section) => /verse 1|verse 2|chorus|outro/i.test(section))) {
+    reasons.push(`Missing required section(s): ${missing.join(', ')}.`)
+  }
+  if (!report.structure.hasChorus) reasons.push('No chorus/hook section is present.')
+  if (report.structure.expectedSections?.includes('outro') && !report.structure.hasOutro) reasons.push('Full vocal songs need an outro before ACE generation.')
+  if (report.structure.sungLineCount < 16 && report.structure.expectedSections?.includes('verse 2')) reasons.push('Too few sung lines for a full vocal song.')
+  if ((metrics?.promptMatch ?? 100) < 65 || semantic?.verdict === 'fail') reasons.push('Prompt match is too weak; the lyrics drift away from the idea.')
+  if ((metrics?.languageMatch ?? 100) < 80) reasons.push('Language match failed.')
+  if ((metrics?.engineSafety ?? 100) < 80) reasons.push('Lyrics contain engine-unsafe text such as directions, critique, or screenplay language.')
+  if (plan?.syllablePlan === 'fail') reasons.push('Syllable plan failed badly enough that ACE timing may suffer.')
+  if (plan?.rhymeScheme === 'fail') reasons.push('Rhyme/flow plan failed across multiple required sections.')
+  if (plan && plan.relatabilityScore < 45) reasons.push('Relatability is too low; the lyrics need a clearer human stake.')
+  const weakSections = sectionScores.filter((section) => /verse|chorus|outro/i.test(section.section) && section.score < 55)
+  if (weakSections.length) reasons.push(`Weak required section(s): ${weakSections.map((section) => `${section.section} ${section.score}/100`).join(', ')}.`)
+  if (report.issues.some((issue) => /screenplay|stage direction|critique|planning text|non-sung/i.test(issue))) {
+    reasons.push('Non-lyric text appears inside the lyric body.')
+  }
+
+  const uniqueReasons = [...new Set(reasons)]
+  return {
+    status: uniqueReasons.length ? 'needs_repair' : 'ready_for_ace',
+    ready: uniqueReasons.length === 0,
+    reasons: uniqueReasons,
+  }
+}
+
 function buildQualityReport(
   lyrics: string,
   modelCritique: string | null = null,
   intent?: SongIntent | null,
   fallbackIdea?: string,
   semanticAdherence?: LyricsQualityReport['semanticAdherence'] | null,
+  plan?: LyricPlan | null,
 ): LyricsQualityReport {
   const clean = sanitizeLyrics(lyrics)
   const sections = sungLinesBySection(clean)
@@ -679,6 +902,10 @@ function buildQualityReport(
   const expectedSections = expectedSectionsFor(intent)
   const missingSections = [...new Set(expectedSections)].filter((section) => !hasExpectedSection(sectionNames, section))
   const topicLock = buildTopicLock(intent, fallbackIdea, clean)
+  const planCompliance = plan ? checkPlanCompliance(clean, plan) : undefined
+  if (planCompliance?.issues.length) {
+    issues.push(...planCompliance.issues.slice(0, 4))
+  }
   const chorusLines = Object.entries(sections)
     .filter(([name]) => /^chorus/.test(name))
     .flatMap(([, lines]) => lines)
@@ -703,6 +930,9 @@ function buildQualityReport(
   if (topicLock.forbiddenDrift.length) score -= 24
   if (semanticAdherence?.verdict === 'fail') score -= 35
   if (semanticAdherence?.verdict === 'needs_work') score -= 18
+  if (planCompliance?.rhymeScheme === 'fail') score -= 12
+  if (planCompliance?.syllablePlan === 'fail') score -= 16
+  if (planCompliance && planCompliance.relatabilityScore < 45) score -= 12
   score = Math.max(0, Math.min(100, score))
   const verdict: LyricsQualityReport['verdict'] = score >= 82 && issues.length === 0 ? 'pass' : score >= 55 ? 'needs_work' : 'fail'
   const localPromptMatch = topicLock.requiredTerms.length
@@ -711,7 +941,7 @@ function buildQualityReport(
   const promptMatch = semanticAdherence ? Math.min(localPromptMatch, semanticAdherence.score) : localPromptMatch
   const structureScore = Math.max(0, 100 - missingSections.length * 22)
 
-  return {
+  const report: Omit<LyricsQualityReport, 'generationGate'> = {
     score,
     verdict,
     summary: verdict === 'pass'
@@ -748,8 +978,81 @@ function buildQualityReport(
     sectionScores,
     lineDecisions,
     semanticAdherence: semanticAdherence ?? undefined,
+    planCompliance,
     topicLock,
     modelCritique,
+  }
+  return { ...report, generationGate: buildGenerationGate(report) }
+}
+
+function rhymePassesForGoal(goal: LyricPlanSection, lines: string[]) {
+  if (lines.length < 4) return true
+  const scheme = goal.rhymeScheme.toLowerCase()
+  const rhymes = lines.slice(0, Math.min(8, lines.length)).map((line) => endRhymeKey(line))
+  const echoes = lines.flatMap(internalEchoes)
+  const repeatedRhymes = rhymes.filter((key, index) => key && rhymes.indexOf(key) !== index)
+  const hookWords = normalizeWords(goal.mustDo.join(' ')).filter((word) => word.length > 3)
+  const hookCallbacks = hookWords.filter((word) => lines.filter((line) => line.toLowerCase().includes(word)).length >= 2)
+
+  if (/internal|rap|hip-hop|aaba/.test(scheme)) {
+    return repeatedRhymes.length >= 1 || echoes.length >= 2 || rhymes[0] === rhymes[1] || rhymes[2] === rhymes[3]
+  }
+  if (/natural speech|abcb|country|folk/.test(scheme)) {
+    return rhymes[1] === rhymes[3] || repeatedRhymes.length >= 1 || hookCallbacks.length >= 1
+  }
+  if (/repeating hook|dance|fragment/.test(scheme)) {
+    return hookCallbacks.length >= 1 || repeatedRhymes.length >= 1
+  }
+  if (/hook callback/.test(scheme)) {
+    return hookCallbacks.length >= 1 || rhymes[0] === rhymes[2] || rhymes[1] === rhymes[3]
+  }
+  if (/abab/.test(scheme)) {
+    return rhymes[0] === rhymes[2] || rhymes[1] === rhymes[3] || repeatedRhymes.length >= 2
+  }
+  return repeatedRhymes.length >= 1 || echoes.length >= 1
+}
+
+function checkPlanCompliance(lyrics: string, plan: LyricPlan): NonNullable<LyricsQualityReport['planCompliance']> {
+  const sections = sungLinesBySection(lyrics)
+  const issues: string[] = []
+  let syllableMisses = 0
+  let rhymeMisses = 0
+  for (const goal of plan.sectionGoals) {
+    const key = Object.keys(sections).find((section) => section.replace(/\s+/g, ' ').trim() === goal.section.toLowerCase() || section.startsWith(goal.section.toLowerCase()))
+    const lines = key ? sections[key] ?? [] : []
+    if (!lines.length && !/intro|instrumental|pre-chorus/i.test(goal.section)) {
+      issues.push(`Plan violation: missing [${goal.section}].`)
+      rhymeMisses += 1
+      continue
+    }
+    const sungLines = lines.filter((line) => !LYRIC_SECTION_RE.test(line))
+    const outOfRange = sungLines.filter((line) => {
+      const count = estimateSyllables(line)
+      return count < goal.syllableMin || count > goal.syllableMax
+    })
+    syllableMisses += outOfRange.length
+    if (outOfRange.length) issues.push(`Plan violation: [${goal.section}] has ${outOfRange.length} line(s) outside ${goal.syllableMin}-${goal.syllableMax} syllables.`)
+    if (sungLines.length >= 4 && !rhymePassesForGoal(goal, sungLines)) {
+      rhymeMisses += 1
+      issues.push(`Plan warning: [${goal.section}] does not clearly satisfy ${goal.rhymeScheme}.`)
+    }
+  }
+  const lyricLower = lyrics.toLowerCase()
+  const relatableWords = ['i ', 'you ', 'we ', 'home', 'work', 'friend', 'love', 'miss', 'wait', 'try', 'want', 'need', 'feel', 'remember', 'tonight', 'morning', 'hands', 'street', 'car', 'room', 'door', 'call', 'name']
+  const humanAnchor = /\b(i|you|we|me|my|your|our)\b/i.test(lyrics) ? 22 : 0
+  const changeAnchor = /\b(learn|learned|change|changed|leave|left|come back|try|tried|finally|still|again|better|afraid|free)\b/i.test(lyricLower) ? 18 : 0
+  const concreteAnchor = relatableWords.filter((word) => lyricLower.includes(word)).length * 10
+  const relatabilityScore = Math.min(100, Math.max(20, humanAnchor + changeAnchor + concreteAnchor))
+  const vibeWords = plan.vibe.toLowerCase().split(/\s+/).filter((word) => word.length > 3)
+  const vibeMatch = !vibeWords.length || vibeWords.some((word) => lyricLower.includes(word)) || plan.vibe === 'relatable and emotionally direct'
+    ? 'pass'
+    : 'needs_work'
+  return {
+    rhymeScheme: rhymeMisses > 2 ? 'fail' : rhymeMisses ? 'needs_work' : 'pass',
+    syllablePlan: syllableMisses > 5 ? 'fail' : syllableMisses ? 'needs_work' : 'pass',
+    relatabilityScore,
+    vibeMatch,
+    issues,
   }
 }
 
@@ -833,7 +1136,8 @@ export async function rewriteLyrics(input: { lyrics: string; idea?: string; inst
   if (!model) throw new Error('No writer model available in Ollama')
   const clean = sanitizeLyrics(input.lyrics)
   if (!clean) throw new Error('No lyrics to rewrite')
-  const startingQuality = buildQualityReport(clean, null, input.intent, input.idea)
+  const lyricPlan = createFallbackLyricPlan(input.intent, input.idea)
+  const startingQuality = buildQualityReport(clean, null, input.intent, input.idea, null, lyricPlan)
   const lockedLines = startingQuality.lineDecisions?.filter((line) => line.decision === 'keep').map((line) => `[${line.section}] ${line.text}`) ?? []
   const repairLines = startingQuality.lineDecisions?.filter((line) => line.decision !== 'keep').map((line) => `[${line.section} line ${line.lineNumber}] ${line.decision.toUpperCase()}: ${line.text} (${line.reasons.join('; ')})`) ?? []
   emitWriterProgress({ stage: 'rewrite', note: 'Rebuilding the lyrics from the current quality issues and the song intent packet.' })
@@ -843,6 +1147,7 @@ export async function rewriteLyrics(input: { lyrics: string; idea?: string; inst
       role: 'user',
       content: [
         buildIntentBrief(input.intent, input.idea),
+        lyricPlanBrief(lyricPlan),
         `Rewrite instruction: ${input.instruction}`,
         'Surgical rewrite rule: keep any strong, on-topic, singable bars exactly or nearly intact. Replace only lines named by the quality issues, weak/outlier lines, missing sections, bland filler, and transitions. Preserve the best hook/callback if it works.',
         `Current quality issues:\n${startingQuality.issues.length ? startingQuality.issues.map((issue) => `- ${issue}`).join('\n') : '- none'}`,
@@ -853,7 +1158,11 @@ export async function rewriteLyrics(input: { lyrics: string; idea?: string; inst
       ].filter(Boolean).join('\n\n'),
     },
   ], 0.75, true, 'lyrics-rewrite')
-  const rewritten = extractLyricsOnly(rewriteRes.text)
+  let rewritten = extractLyricsOnly(rewriteRes.text)
+  if (!rewritten) {
+    emitWriterProgress({ stage: 'rewrite', note: 'The rewrite response was malformed, so DoReMii is repairing it into strict tagged lyrics.' })
+    rewritten = await repairLyricsEnvelope(model, rewriteRes.text || rewriteRes.thinkBlock || '', buildIntentBrief(input.intent, input.idea), lyricPlan, 'lyrics-rewrite')
+  }
   if (!rewritten) {
     throw new Error('The rewrite returned critique notes instead of tagged lyrics. Try again or switch writer models.')
   }
@@ -869,9 +1178,29 @@ export async function rewriteLyrics(input: { lyrics: string; idea?: string; inst
     critiqueRes.text,
     adherence ? `ADHERENCE CHECK:\nSCORE: ${adherence.score}\nVERDICT: ${adherence.verdict}\nNOTES:\n${adherence.notes.map((note) => `- ${note}`).join('\n')}` : null,
   ].filter(Boolean).join('\n\n')
-  const quality = buildQualityReport(rewritten, critique, input.intent, input.idea, adherence)
+  let quality = buildQualityReport(rewritten, critique, input.intent, input.idea, adherence, lyricPlan)
+  const rescueBrief = [
+    buildIntentBrief(input.intent, input.idea),
+    lyricPlanBrief(lyricPlan),
+  ].join('\n\n')
+  for (let rescueRound = 0; rescueRound < 2 && !quality.generationGate?.ready; rescueRound += 1) {
+    const rescued = await repairAgainstGate(model, rewritten, rescueBrief, lyricPlan, quality, `manual-rewrite-${rescueRound + 1}`)
+    if (rescued !== rewritten) {
+      rewritten = rescued
+      const rescueAdherence = await runAdherenceCheck(model, rewritten, input.intent, input.idea)
+      const rescueCritique = [
+        critique,
+        `MANUAL REWRITE RESCUE ROUND ${rescueRound + 1} TARGETS:\n${quality.generationGate?.reasons.map((reason) => `- ${reason}`).join('\n') ?? '- none'}`,
+        rescueAdherence ? `RESCUE ADHERENCE CHECK:\nSCORE: ${rescueAdherence.score}\nVERDICT: ${rescueAdherence.verdict}\nNOTES:\n${rescueAdherence.notes.map((note) => `- ${note}`).join('\n')}` : null,
+      ].filter(Boolean).join('\n\n')
+      quality = buildQualityReport(rewritten, rescueCritique, input.intent, input.idea, rescueAdherence, lyricPlan)
+    } else {
+      break
+    }
+  }
   emitWriterProgress({ stage: 'finalizing', note: 'Packaging the clean rewrite with its quality report.' })
   return {
+    plan: lyricPlan,
     lyrics: rewritten,
     draft: clean,
     drafts: [draftSnapshot],
@@ -972,10 +1301,12 @@ export async function ollamaComplete(
   const think = opts?.think ?? false
   const temperature = opts?.temperature ?? 0.8
   const isQwen = /^qwen3:/i.test(model)
-  const userContent = !think && isQwen ? `${user}\n\n/no_think` : user
+  // Only thinking models accept `think`; qwen2.5/llama run plain (and clean).
+  const apiThink = isQwen && think
+  const userContent = !apiThink && isQwen ? `${user}\n\n/no_think` : user
 
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 180_000)
+  activeWriterAbort = controller
   try {
     const response = await fetch(`${OLLAMA_URL}/api/chat`, {
       method: 'POST',
@@ -984,13 +1315,13 @@ export async function ollamaComplete(
       body: JSON.stringify({
         model,
         stream: false,
-        think,
+        think: apiThink,
         keep_alive: '10m',
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: userContent },
         ],
-        options: { temperature, num_ctx: think ? THINK_CTX : CHAT_CTX, num_predict: Math.min(MAX_OUTPUT_TOKENS, tokenBudgetFor('completion', think)) },
+        options: { temperature, num_ctx: contextWindowFor(model, think), num_predict: Math.min(MAX_OUTPUT_TOKENS, tokenBudgetFor('completion', think)) },
       }),
     })
     if (!response.ok) throw new Error(`Ollama HTTP ${response.status}`)
@@ -1004,7 +1335,8 @@ export async function ollamaComplete(
     }
     return text.trim()
   } finally {
-    clearTimeout(timer)
+    if (activeWriterAbort === controller) activeWriterAbort = null
+    writerCancelRequested = false
   }
 }
 
@@ -1103,24 +1435,54 @@ export async function suggestTitle(input: { lyrics: string; idea?: string; model
   }
 }
 
-const RANDOM_GENRES = ['dream pop', 'drill', 'neo-soul', 'post-rock', 'synthwave', 'bluegrass', 'shoegaze', 'afrobeats', 'industrial techno', 'bedroom pop', 'cinematic orchestral', 'lo-fi hip-hop', 'flamenco', 'gospel house', 'darkwave', 'jazz fusion', 'hyperpop', 'alt-country', 'UK garage', 'progressive metal', 'bossa nova', 'future funk', 'ambient folk', 'punk rap']
-const RANDOM_THEMES = [
-  'a baker hiding apology notes inside fortune cookies',
-  'a night-shift nurse singing to the hospital elevators',
-  'two neighbors who only meet during power outages',
-  'a kid building a cardboard spaceship in a laundromat',
-  'an ex-racer fixing bicycles for strangers after midnight',
-  'a retired magician losing tricks but keeping one impossible coin',
-  'a desert motel clerk collecting postcards from guests who never arrive',
-  'friends turning a flooded basement into a dance floor',
-  'a beekeeper learning to forgive a storm',
-  'a street painter racing the rain before the mural disappears',
-  'a choir practicing in an empty roller rink',
-  'a chef trying to recreate a song from a childhood radio',
-  'a security guard befriending a museum statue during thunderstorms',
-  'a diver finding a wedding ring tied to a coral branch',
-  'a rooftop gardener throwing a sunrise party for one lonely tenant',
-  'a mechanic making a lullaby from broken dashboard chimes',
+const RANDOM_GENRES = ['radio pop', 'pop rock', 'trap soul', 'folk pop', 'country pop', 'alt-rock', 'synthwave', 'afrobeats', 'bedroom pop', 'lo-fi hip-hop', 'gospel house', 'jazz pop', 'hyperpop', 'alt-country', 'UK garage', 'bossa nova', 'future funk', 'ambient folk', 'punk rap', 'dance pop', 'indie R&B', 'garage rock']
+const RANDOM_HUMAN_STAKES = [
+  'trying to apologize before a friendship goes quiet',
+  'getting one last night with friends before everything changes',
+  'driving home after a breakup and pretending the radio is enough',
+  'working a closing shift while dreaming about a different life',
+  'falling for someone who keeps sending mixed signals',
+  'celebrating a small win after months of feeling stuck',
+  'missing home but refusing to turn around',
+  'learning to be proud without needing everyone to understand',
+  'choosing joy in a week that tried to drain it out',
+  'remembering a summer that made ordinary streets feel golden',
+  'wanting to be brave enough to say the honest thing',
+  'turning a boring weekend into a legendary memory',
+  'finding confidence after being underestimated',
+  'holding onto hope while money, time, and sleep are all short',
+  'letting go of a version of yourself that was only surviving',
+  'feeling invincible for three minutes on a crowded dance floor',
+]
+const RANDOM_SETTINGS = [
+  'late-night kitchen',
+  'parking lot after work',
+  'rainy bus stop',
+  'cheap apartment with music leaking through the walls',
+  'small-town fair',
+  'road trip at sunrise',
+  'school gym after the lights go low',
+  'corner store in summer heat',
+  'campfire with friends',
+  'bedroom studio',
+  'wedding afterparty',
+  'train platform',
+  'empty beach morning',
+  'crowded house party',
+  'open highway',
+  'back porch during a storm',
+]
+const RANDOM_VIBES = [
+  'relatable and hooky',
+  'funny but secretly sincere',
+  'triumphant and clean',
+  'bittersweet but warm',
+  'romantic and nervous',
+  'stern and confident',
+  'playful and rhythmic',
+  'dark but not hopeless',
+  'nostalgic and bright',
+  'big chorus, grounded verses',
 ]
 const RANDOM_STRUCTURES = [
   'anthem: verse tension, chorus release, bridge truth, outro resolve',
@@ -1134,6 +1496,66 @@ const RANDOM_STRUCTURES = [
   'dance-floor release: pressure in verses, simple hook, rhythmic payoff',
   'story ballad: clear scene, emotional turn, closing image without plot twists',
 ]
+const RANDOM_RELATIONSHIPS = [
+  'best friends who are almost family',
+  'two people avoiding an honest conversation',
+  'a person talking to their younger self',
+  'coworkers surviving the same long shift',
+  'siblings who only show love by joking',
+  'someone singing to the version of themself that almost gave up',
+  'a couple trying to enjoy one ordinary night',
+  'a group chat that became a lifeline',
+  'a stranger whose small kindness changes the night',
+  'the singer and the city they are outgrowing',
+]
+const RANDOM_PRESSURES = [
+  'the clock is running out',
+  'money is tight',
+  'everyone expects them to act fine',
+  'a goodbye is coming',
+  'the party is louder than the feeling underneath it',
+  'they have one chance to say the truth',
+  'they are trying not to repeat an old mistake',
+  'the memory is better than the present',
+  'they are tired of being underestimated',
+  'they know the moment will not last',
+]
+const RANDOM_OBJECTS = [
+  'a cracked phone screen',
+  'a borrowed jacket',
+  'gas station coffee',
+  'a receipt with a number on it',
+  'muddy sneakers',
+  'a half-charged speaker',
+  'porch lights',
+  'a paper crown',
+  'a key that no longer fits',
+  'a dashboard photo',
+  'cold fries in a paper bag',
+  'a hoodie that still smells like summer',
+  'a voicemail nobody deletes',
+  'glow sticks fading on the floor',
+]
+const RANDOM_HOOK_ANGLES = [
+  'the chorus turns one plain sentence into the emotional thesis',
+  'the hook is a chant people can sing back after one listen',
+  'the title line lands as a confession in the chorus',
+  'the chorus flips a sad detail into a reason to keep moving',
+  'the hook repeats a concrete image until it becomes symbolic',
+  'the chorus answers the question raised by verse one',
+  'the final chorus changes one word to show growth',
+  'the hook feels simple on purpose, like something said out loud in a car',
+]
+const RANDOM_DETAILS = [
+  'use one funny detail that becomes sincere later',
+  'start with a specific everyday object, then widen into the emotion',
+  'keep the story in one night rather than a whole life history',
+  'make verse two reveal what the singer was afraid to admit',
+  'let the bridge say the thing the verses kept dodging',
+  'make the chorus emotionally direct instead of abstract',
+  'include one sensory detail from the setting, but keep people at the center',
+  'make the outro quieter and more honest than the chorus',
+]
 const BANNED_CONCEPT_PHRASES = [
   'last train',
   'dying town',
@@ -1142,19 +1564,136 @@ const BANNED_CONCEPT_PHRASES = [
   'moment it turns',
   'build the whole story toward it',
   'recurring dream',
+  'hidden map',
+  'collapsed mural',
+  'drowned mermaid',
+  'street painter',
+  'street artist',
+  'spray can',
+  'marinella',
+  'neo-soul production',
+  'one final night',
+  'filled with laughter but shadowed',
+  'tomorrow will bring change',
+  'future feels uncertain',
+  'secluded beach',
 ]
 let recentConceptSeeds: string[] = []
+let recentStyleSeeds: string[] = []
 
-function songIdeaFallback(pick: <T>(items: T[]) => T, remember: (seed: string) => void) {
-  const availableThemes = RANDOM_THEMES.filter((theme) => !recentConceptSeeds.includes(theme))
-  const theme = pick(availableThemes.length ? availableThemes : RANDOM_THEMES)
-  const shape = pick(RANDOM_STRUCTURES)
-  remember(theme)
-  const cleanShape = shape.split(':').pop()?.trim() || 'verse tension, chorus release, bridge truth, outro resolve'
-  return {
-    title: '',
-    idea: `A song about ${theme}, shaped around ${cleanShape}. Keep the lyric focus on one singable emotional angle, with verse images that develop the idea and a chorus built around one memorable hook phrase.`,
+interface ConceptSeed {
+  stakes: string
+  setting: string
+  vibe: string
+  shape: string
+  relationship: string
+  pressure: string
+  object: string
+  hookAngle: string
+  detail: string
+}
+
+function buildConceptSeed(pick: <T>(items: T[]) => T, remember: (seed: string) => void): ConceptSeed {
+  const availableStakes = RANDOM_HUMAN_STAKES.filter((item) => !recentConceptSeeds.includes(item))
+  const stakes = pick(availableStakes.length ? availableStakes : RANDOM_HUMAN_STAKES)
+  const seed = {
+    stakes,
+    setting: pick(RANDOM_SETTINGS),
+    vibe: pick(RANDOM_VIBES),
+    shape: pick(RANDOM_STRUCTURES),
+    relationship: pick(RANDOM_RELATIONSHIPS),
+    pressure: pick(RANDOM_PRESSURES),
+    object: pick(RANDOM_OBJECTS),
+    hookAngle: pick(RANDOM_HOOK_ANGLES),
+    detail: pick(RANDOM_DETAILS),
   }
+  remember(`${seed.stakes}|${seed.setting}|${seed.vibe}`)
+  return seed
+}
+
+function titleFromSeed(seed: ConceptSeed) {
+  const titlePieces = [
+    seed.object.replace(/^(a|an)\s+/i, ''),
+    seed.setting.replace(/^(a|an)\s+/i, ''),
+    seed.pressure.replace(/^(the|a|an)\s+/i, ''),
+  ]
+  const source = titlePieces[Math.floor(Math.random() * titlePieces.length)]
+  return source
+    .replace(/\b(is|are|they|them|their|that|the|and|with|into|from)\b/gi, '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 5)
+    .map((word) => word[0].toUpperCase() + word.slice(1))
+    .join(' ') || 'Almost Honest'
+}
+
+function songIdeaFallback(pick: <T>(items: T[]) => T, remember: (seed: string) => void, seed = buildConceptSeed(pick, remember)) {
+  const cleanShape = seed.shape.split(':').pop()?.trim() || 'verse tension, chorus release, bridge truth, outro resolve'
+  return {
+    title: titleFromSeed(seed),
+    idea: `A ${seed.vibe} song about ${seed.stakes}, told through ${seed.relationship} in a ${seed.setting} while ${seed.pressure}. Build the verses around ${seed.object} and concrete choices, then make the chorus ${seed.hookAngle}; shape it as ${cleanShape}.`,
+  }
+}
+
+function normalizeConceptIdea(parsed: Record<string, unknown>) {
+  const title = String(parsed.title ?? '').trim()
+  const explicitIdea = String(parsed.idea ?? '').trim()
+  if (explicitIdea) return { title, idea: explicitIdea }
+  const parts = [
+    parsed.premise,
+    parsed.listenerSituation,
+    parsed.verseArc,
+    parsed.hookAngle,
+  ].map((part) => String(part ?? '').trim()).filter(Boolean)
+  return { title, idea: parts.join(' ') }
+}
+
+function conceptQualityIssues(title: string, idea: string) {
+  const issues: string[] = []
+  const text = `${title} ${idea}`.toLowerCase()
+  if (idea.length < 80) issues.push('too short to guide lyrics')
+  if (idea.length > 460) issues.push('too long; sounds like prose instead of a song brief')
+  if (BANNED_CONCEPT_PHRASES.some((phrase) => text.includes(phrase))) issues.push('contains a recently banned or overused concept phrase')
+  if (/\b(hidden|revealing|secret)\s+(map|tunnel|portal|prophecy)\b/i.test(idea)) issues.push('movie-plot twist instead of a singable premise')
+  if (/\b(camera|shot|frame|visual|image generator|video|scene opens|final image)\b/i.test(idea)) issues.push('sounds like an image/video prompt')
+  if ((idea.match(/\b[A-Z][a-z]{3,}\b/g) ?? []).length > 4) issues.push('too many proper-name/lore details')
+  if (!/\b(chorus|hook|title line|refrain)\b/i.test(idea)) issues.push('missing hook or chorus target')
+  if (!/\b(verse|verses|verse one|verse two|bridge|outro)\b/i.test(idea)) issues.push('missing verse-to-song arc')
+  if (!/\b(friend|friends|love|home|work|shift|party|family|younger self|someone|singer|they|we|I|me|you|us|heart|hope|regret|confidence|goodbye|memory|truth)\b/i.test(idea)) issues.push('missing human listener stakes')
+  if (/\buncertainty\b/i.test(idea) && !/\bwhy|because|truth|afraid|hope|change|goodbye\b/i.test(idea)) issues.push('uses vague uncertainty without a clear human reason')
+  return issues
+}
+
+async function repairConceptIdea(model: string, seed: ConceptSeed, badTitle: string, badIdea: string, issues: string[], think?: boolean) {
+  const raw = await ollamaComplete(
+    model,
+    `Repair a weak song concept. Reply as STRICT JSON only: {"title":"2-5 words","idea":"2 sentences max"}.
+Rules:
+- Make it a song brief, not a film scene or image prompt.
+- Keep the human situation relatable and singable.
+- Include a clear hook/chorus target and a verse-to-chorus arc.
+- Do not add random character lore, hidden maps, murals, or screenplay action.`,
+    `Seed to obey:
+Human stakes: ${seed.stakes}
+Relationship: ${seed.relationship}
+Setting: ${seed.setting}
+Pressure: ${seed.pressure}
+Object detail: ${seed.object}
+Vibe: ${seed.vibe}
+Song shape: ${seed.shape}
+Hook angle: ${seed.hookAngle}
+Extra instruction: ${seed.detail}
+
+Rejected title: ${badTitle}
+Rejected idea: ${badIdea}
+Problems to fix: ${issues.join('; ')}`,
+    { think: think ?? true, temperature: 0.7 },
+  )
+  const match = stripLeakedReasoning(raw).match(/\{[\s\S]*\}/)
+  if (!match) return null
+  const parsed = normalizeConceptIdea(JSON.parse(match[0]) as Record<string, unknown>)
+  const fixedIssues = conceptQualityIssues(parsed.title, parsed.idea)
+  return fixedIssues.length ? null : parsed
 }
 
 export async function generateConceptIdea(input?: { think?: boolean; model?: string }): Promise<{ title: string; idea: string }> {
@@ -1163,59 +1702,161 @@ export async function generateConceptIdea(input?: { think?: boolean; model?: str
   const remember = (seed: string) => {
     recentConceptSeeds = [seed, ...recentConceptSeeds.filter((item) => item !== seed)].slice(0, 6)
   }
-  if (!model) return songIdeaFallback(pick, remember)
+  const seed = buildConceptSeed(pick, remember)
+  if (!model) return songIdeaFallback(pick, remember, seed)
   try {
-    const availableThemes = RANDOM_THEMES.filter((theme) => !recentConceptSeeds.includes(theme))
-    const seedTheme = pick(availableThemes.length ? availableThemes : RANDOM_THEMES)
-    const seedStructure = pick(RANDOM_STRUCTURES)
-    remember(seedTheme)
     const raw = await ollamaComplete(
       model,
-      `You create SONG IDEAS, not movie plots. Reply as STRICT JSON only:
-{"title":"2-5 word song title","idea":"2 sentences max. Sentence 1: the song premise and emotional angle. Sentence 2: the verse-to-chorus arc and hook target."}
+      `You are DoReMii's A&R concept writer. You create SONG CONCEPTS that make lyrics easier, not movie plots.
+
+Reply as STRICT JSON only:
+{"title":"2-5 word song title","premise":"one clear sentence","listenerSituation":"one human situation listeners recognize","verseArc":"how verse 1 grows into verse 2/bridge","hookAngle":"what the chorus proves or repeats","idea":"2 sentences max combining the best parts"}
 Rules:
 - Do not name random characters unless the user asks.
-- Do not write action-scene plot twists, hidden maps, collapsed murals, screenplay beats, or image/video prompts.
+- Do not write action-scene plot twists, hidden maps, collapsed murals, drowned mermaids, screenplay beats, secret tunnels, or image/video prompts.
+- Do not default to painters, murals, canvas, rain-erases-art, neo-soul, or over-poetic gallery imagery.
+- Make the stakes human and singable: love, friendship, confidence, celebration, grief, work, home, regret, hope, or freedom.
 - The idea must be easy to turn into lyrics with verses, chorus, bridge, and outro.
-- Mention the hook angle, not every event.`,
-      `Seed theme: ${seedTheme}
-Song shape: ${seedStructure}
+- Mention the hook angle and verse arc; do not summarize a whole short story.
+- Weirdness is allowed only as one detail; the emotional premise must stay clear.
+- Keep the idea compact and music-native: who sings, why it matters, what the chorus says.`,
+      `Human stake: ${seed.stakes}
+Relationship lens: ${seed.relationship}
+Setting: ${seed.setting}
+Pressure: ${seed.pressure}
+Concrete object: ${seed.object}
+Vibe: ${seed.vibe}
+Song shape: ${seed.shape}
+Hook angle: ${seed.hookAngle}
+Detail instruction: ${seed.detail}
 Recent seeds to avoid: ${recentConceptSeeds.join('; ') || 'none'}
 Write one compact song idea now.`,
       { think: input?.think ?? true, temperature: 0.95 },
     )
     const match = stripLeakedReasoning(raw).match(/\{[\s\S]*\}/)
     if (match) {
-      const parsed = JSON.parse(match[0]) as { title?: string; idea?: string }
-      const idea = (parsed.idea || '').trim()
-      const combined = `${parsed.title ?? ''} ${idea}`.toLowerCase()
-      const banned = BANNED_CONCEPT_PHRASES.some((phrase) => combined.includes(phrase))
-      if (!banned && idea.length > 45 && idea.length < 420) return { title: (parsed.title || '').trim(), idea }
+      const parsed = normalizeConceptIdea(JSON.parse(match[0]) as Record<string, unknown>)
+      const issues = conceptQualityIssues(parsed.title, parsed.idea)
+      if (!issues.length) return parsed
+      const fixed = await repairConceptIdea(model, seed, parsed.title, parsed.idea, issues, input?.think)
+      if (fixed) return fixed
     }
-    return songIdeaFallback(pick, remember)
+    return songIdeaFallback(pick, remember, seed)
   } catch {
-    return songIdeaFallback(pick, remember)
+    return songIdeaFallback(pick, remember, seed)
   }
+}
+
+const STYLE_SIGNATURES = [
+  'rubbery bass line',
+  'bright acoustic strums',
+  'glassy synth hook',
+  'live-room drum groove',
+  'muted piano pulse',
+  'call-and-response backing vocals',
+  'picked electric guitar motif',
+  '808 kick pattern',
+  'warm organ pad',
+  'handclap/snare pocket',
+  'dry funk guitar chops',
+  'subby UK garage bass',
+  'brass stabs',
+  'stomp-clap percussion',
+  'dusty breakbeat',
+  'pulsing arpeggiator',
+]
+const STYLE_MOVEMENTS = [
+  'drops to a stripped verse before a wide final chorus',
+  'starts intimate and adds layers every eight bars',
+  'uses a half-time bridge before snapping back into the hook',
+  'keeps the verses dry and close, then opens the chorus with harmony',
+  'adds one surprise texture in the bridge without changing the song topic',
+  'begins with a hooky motif, pulls back for verse one, then stacks gang vocals in the final chorus',
+  'moves from conversational verses into a chantable, crowd-ready hook',
+  'lets the drums vanish for the bridge so the final chorus lands bigger',
+]
+
+function cleanStyleCaption(value: string) {
+  return cleanQuotedText(value)
+    .replace(/^here'?s\s+(a\s+)?(sound\s*&\s*style|style|caption)[^:]*:\s*/i, '')
+    .replace(/^sound\s*&\s*style\s*caption\s*:\s*/i, '')
+    .replace(/\n{2,}/g, '\n')
+    .trim()
+}
+
+function styleQualityIssues(style: string, idea: string, genre: string) {
+  const issues: string[] = []
+  const text = style.toLowerCase()
+  if (style.length < 140) issues.push('too short to guide production')
+  if (style.length > 620) issues.push('too long for a clean ACE caption')
+  if (/^here'?s|caption for|sound\s*&\s*style caption/i.test(style)) issues.push('contains UI/preamble text')
+  if (!text.includes(genre.split(/\s+/)[0].toLowerCase()) && !/\b(pop|rock|rap|hip-hop|country|folk|metal|edm|dance|garage|jazz|r&b|synth|punk|afro|bossa|funk)\b/i.test(style)) issues.push('missing clear genre/subgenre')
+  if (!/\b(bpm|tempo|slow|midtempo|fast|brisk|laid-back|driving|half-time|uptempo)\b/i.test(style)) issues.push('missing tempo feel')
+  if (!/\b(vocal|singer|rap|chant|harmony|lead)\b/i.test(style)) issues.push('missing vocal character')
+  if (!/\b(drum|kick|snare|beat|percussion|breakbeat|groove)\b/i.test(style)) issues.push('missing drum feel')
+  if (!/\b(bass|guitar|piano|synth|organ|brass|strings|pad|keys|arpeggio)\b/i.test(style)) issues.push('missing key instruments')
+  if (!/\b(mix|texture|polished|gritty|warm|dry|wide|lo-fi|glossy|raw|intimate)\b/i.test(style)) issues.push('missing mix texture')
+  if (/\bneo-soul\b/i.test(style) && !/\bneo-soul\b/i.test(idea)) issues.push('unrequested neo-soul drift')
+  if (/\bpaint|canvas|mural|rain washes\b/i.test(style) && !/\bpaint|canvas|mural|rain\b/i.test(idea)) issues.push('unrequested painting/rain imagery')
+  return issues
+}
+
+function styleFallback(genre: string, signature: string, movement: string) {
+  return `${genre} production built directly around the song idea, with a clear lead vocal, ${signature}, and a drum pocket that supports the emotional turn instead of overpowering it. The mix should feel specific and dimensional, with one memorable instrumental motif, and the arrangement ${movement}.`
+}
+
+async function repairStyleCaption(model: string, input: { title?: string; idea: string; tags?: string[]; think?: boolean }, genre: string, badStyle: string, issues: string[]) {
+  const raw = await ollamaComplete(
+    model,
+    `Repair a weak SOUND & STYLE caption. Reply with ONLY 2-3 sentences, no preamble, no quotes, no markdown.
+Include genre/subgenre, tempo feel, vocal character, key instruments, drum feel, mix texture, and arrangement movement.
+Keep the song topic unchanged.`,
+    `Title: ${input.title || 'untitled'}
+Song idea: ${input.idea}
+Genre seed: ${genre}
+Tags: ${input.tags?.join(', ') || 'none'}
+Rejected caption: ${badStyle}
+Problems to fix: ${issues.join('; ')}`,
+    { think: input.think ?? true, temperature: 0.65 },
+  )
+  const fixed = cleanStyleCaption(stripLeakedReasoning(raw))
+  return styleQualityIssues(fixed, input.idea, genre).length ? '' : fixed
 }
 
 export async function generateStyleForIdea(input: { title?: string; idea: string; tags?: string[]; model?: string; think?: boolean }): Promise<string> {
   const model = await pickWriterModel(input.model)
   const pick = <T>(items: T[]) => items[Math.floor(Math.random() * items.length)]
-  const genre = pick(RANDOM_GENRES)
+  const availableGenres = RANDOM_GENRES.filter((item) => !recentStyleSeeds.includes(item))
+  const genre = pick(availableGenres.length ? availableGenres : RANDOM_GENRES)
+  recentStyleSeeds = [genre, ...recentStyleSeeds.filter((item) => item !== genre)].slice(0, 8)
   const tagLine = input.tags?.length ? `User tags to respect: ${input.tags.join(', ')}` : `Suggested genre flavor: ${genre}`
-  const fallback = `${genre} production shaped around the song idea: clear lead vocal, hook-forward chorus, one signature instrument, tight drums, and a mix that grows from intimate verses into a wider final chorus.`
+  const signature = pick(STYLE_SIGNATURES)
+  const movement = pick(STYLE_MOVEMENTS)
+  const fallback = styleFallback(genre, signature, movement)
   if (!model) return fallback
   try {
     const text = await ollamaComplete(
       model,
-      `You write SOUND & STYLE captions for an AI music generator. Base the production on the song idea. Reply with ONLY 2-3 vivid sentences. Include genre/subgenre, tempo feel, vocal character, key instruments, drum feel, and mix texture. Do not add lyrics. Do not change the song topic.`,
+      `You write SOUND & STYLE captions for an AI music generator. Base the production on the song idea, but do not rewrite the premise.
+
+Reply with ONLY 2-3 vivid sentences.
+Must include: genre/subgenre, tempo feel, vocal character, key instruments, drum feel, mix texture, and arrangement movement.
+Rules:
+- Do not add lyrics.
+- Do not change the song topic.
+- Do not default to neo-soul, painting imagery, rain, canvas, or generic "clear lead vocal, hook-forward chorus" phrasing unless the idea/tags ask for it.
+- Make this style distinct from common playlist-card defaults.`,
       `Title: ${input.title || 'untitled'}
 Song idea: ${input.idea}
-${tagLine}`,
+${tagLine}
+Recently used style seeds to avoid: ${recentStyleSeeds.join(', ')}`,
       { think: input.think ?? true, temperature: 0.85 },
     )
-    const cleaned = cleanQuotedText(stripLeakedReasoning(text))
-    return cleaned && !looksLikeExplanation(cleaned) ? cleaned : fallback
+    const cleaned = cleanStyleCaption(stripLeakedReasoning(text))
+    const issues = styleQualityIssues(cleaned, input.idea, genre)
+    if (cleaned && !looksLikeExplanation(cleaned) && !issues.length) return cleaned
+    const repaired = await repairStyleCaption(model, input, genre, cleaned, issues)
+    return repaired || fallback
   } catch {
     return fallback
   }
@@ -1304,6 +1945,211 @@ export function structurePlanFor(intent?: SongIntent): { sections: { tag: string
   return { sections, minDuration, text }
 }
 
+function isLyricPlan(value: unknown): value is LyricPlan {
+  return Boolean(value && typeof value === 'object' && Array.isArray((value as LyricPlan).sectionGoals))
+}
+
+function inferVibe(intent?: SongIntent | null, idea?: string) {
+  const hay = `${intent?.tags.join(' ') ?? ''} ${intent?.styleCaption ?? ''} ${intent?.rawIdea ?? idea ?? ''}`.toLowerCase()
+  if (/funny|goofy|silly|comedy/.test(hay)) return 'playful'
+  if (/dark|angry|stern|hard|aggressive/.test(hay)) return 'stern'
+  if (/romantic|love|tender/.test(hay)) return 'romantic'
+  if (/victory|triumph|anthem|epic/.test(hay)) return 'triumphant'
+  if (/sad|lonely|melancholy/.test(hay)) return 'bittersweet'
+  return 'relatable and emotionally direct'
+}
+
+function inferGenre(intent?: SongIntent | null) {
+  const tags = intent?.tags ?? []
+  return tags.find((tag) => /pop|rock|rap|hip-hop|country|folk|metal|edm|synthwave|ambient|jazz|r&b/i.test(tag)) || 'modern pop'
+}
+
+function createFallbackLyricPlan(intent?: SongIntent | null, idea?: string): LyricPlan {
+  const topic = getIntentIdea(intent, idea) || 'the user song idea'
+  const topicLock = buildTopicLock(intent, idea)
+  const structure = structurePlanFor(intent ?? undefined)
+  const vibe = inferVibe(intent, idea)
+  const genre = inferGenre(intent)
+  const sectionGoals = structure.sections.map((section, index) => {
+    const sectionName = section.tag.replace(/[[\]]/g, '')
+    const isChorus = /chorus|hook/i.test(sectionName)
+    const isOutro = /outro/i.test(sectionName)
+    const isRap = /rap|hip-hop|drill|trap/i.test(genre)
+    const isCountry = /country|folk|bluegrass/i.test(genre)
+    const isDance = /edm|house|garage|dance|techno|synthwave/i.test(genre)
+    const lineCount = Number(section.lines.match(/\d+/)?.[0] ?? (isChorus ? 4 : isOutro ? 3 : 6))
+    const rhymeScheme = isRap
+      ? (isChorus ? 'hook callback + internal rhyme' : 'AABA with internal rhyme')
+      : isCountry
+        ? (isChorus ? 'ABAB title payoff' : 'ABCB natural speech rhyme')
+        : isDance
+          ? (isChorus ? 'repeating hook fragments' : 'ABAB short rhythmic phrases')
+          : isChorus ? 'ABAB with hook callback' : lineCount <= 4 ? 'ABAB' : 'ABABCC'
+    return {
+      section: sectionName,
+      purpose: isChorus
+        ? `state the hook in a memorable, singable way tied to ${topic}`
+        : isOutro
+          ? 'close the emotional loop with a final image, not a throwaway label'
+          : index === 0
+            ? `open the listener-facing situation around ${topic}`
+            : `develop the premise and raise or resolve the stakes around ${topic}`,
+      lineCount,
+      rhymeScheme,
+      syllableMin: isRap ? 7 : isDance ? 4 : isChorus ? 6 : 7,
+      syllableMax: isRap ? 13 : isDance ? 9 : isChorus ? 10 : 11,
+      mustDo: topicLock.requiredTerms.slice(0, 6),
+      avoid: [...topicLock.forbiddenDrift, 'screenplay narration', 'generic greeting-card phrases'],
+    }
+  })
+  return {
+    songPremise: topic.slice(0, 220),
+    emotionalAngle: vibe,
+    relatableListenerSituation: `A listener should recognize a human stake in this: wanting, losing, proving, missing, celebrating, or changing through ${topic}.`,
+    pointOfView: 'first person unless the user clearly requests another narrator',
+    vibe,
+    genre,
+    genreFusion: null,
+    hookPhraseTarget: topicLock.requiredTerms.slice(0, 3).join(' ') || 'a clear repeated hook from the title',
+    forbiddenDriftWords: [...new Set([...DRIFT_TERMS, ...topicLock.forbiddenDrift])].slice(0, 18),
+    sectionGoals,
+    createdAt: new Date().toISOString(),
+  }
+}
+
+function lyricPlanBrief(plan: LyricPlan) {
+  return [
+    'LYRIC PLAN - this is the source of truth before drafting:',
+    MUSIC_THEORY_SANDWICH,
+    `Premise: ${plan.songPremise}`,
+    `Relatable situation: ${plan.relatableListenerSituation}`,
+    `POV: ${plan.pointOfView}`,
+    `Vibe: ${plan.vibe}`,
+    `Genre: ${plan.genre}${plan.genreFusion ? ` fused with ${plan.genreFusion}` : ''}`,
+    `Hook target: ${plan.hookPhraseTarget}`,
+    `Forbidden drift: ${plan.forbiddenDriftWords.join(', ')}`,
+    'Section goals:',
+    ...plan.sectionGoals.map((section) => `- [${section.section}] ${section.lineCount} lines, ${section.rhymeScheme}, ${section.syllableMin}-${section.syllableMax} syllables: ${section.purpose}`),
+  ].join('\n')
+}
+
+async function repairAgainstGate(
+  model: string,
+  lyrics: string,
+  brief: string,
+  lyricPlan: LyricPlan,
+  quality: LyricsQualityReport,
+  label: string,
+) {
+  const blockers = quality.generationGate?.reasons ?? []
+  if (!blockers.length) return lyrics
+  const weakSections = quality.sectionScores
+    ?.filter((section) => section.verdict !== 'keep' || section.score < 70)
+    .map((section) => `[${section.section}] ${section.score}/100 ${section.verdict}: ${section.notes.join(', ')}`)
+    .slice(0, 10) ?? []
+  const repairLines = quality.lineDecisions
+    ?.filter((line) => line.decision !== 'keep')
+    .map((line) => `[${line.section} line ${line.lineNumber}] ${line.decision.toUpperCase()}: ${line.text} (${line.reasons.join('; ')})`)
+    .slice(0, 32) ?? []
+  const lockedLines = quality.lineDecisions
+    ?.filter((line) => line.decision === 'keep')
+    .map((line) => `[${line.section}] ${line.text}`)
+    .slice(0, 32) ?? []
+
+  emitWriterProgress({ stage: 'rewrite', note: `Quality rescue: ${blockers.slice(0, 2).join(' ')}` })
+  const rescue = await chat(model, [
+    { role: 'system', content: SONGWRITER_SYSTEM },
+    {
+      role: 'user',
+      content: `${brief}
+
+${lyricPlanBrief(lyricPlan)}
+
+The draft below is BLOCKED from ACE generation. You must fix the blocker causes, not merely polish.
+
+BLOCKERS:
+${blockers.map((reason) => `- ${reason}`).join('\n')}
+
+WEAK SECTIONS:
+${weakSections.length ? weakSections.map((item) => `- ${item}`).join('\n') : '- none'}
+
+LINES TO REPAIR:
+${repairLines.length ? repairLines.map((item) => `- ${item}`).join('\n') : '- none'}
+
+LOCKED GOOD BARS TO KEEP:
+${lockedLines.length ? lockedLines.map((item) => `- ${item}`).join('\n') : '- none'}
+
+Current lyrics:
+${lyrics}
+
+Repair requirements:
+- Return ONLY strict JSON with a "lyrics" string.
+- Keep locked good bars where possible.
+- Fix every blocker directly.
+- If a required section is weak, rewrite that whole section.
+- If the chorus is weak, create a clearer repeated hook tied to the title/idea.
+- If relatability is low, add first-person or direct-address human stakes.
+- If rhyme/syllables fail, make lines singable for the genre rather than forcing childish rhymes.
+- No critique, no planning notes, no rhyme labels, no screenplay text.
+
+Return:
+{"plan":${JSON.stringify(lyricPlan)},"lyrics":"[Verse 1]\\n...","keptLines":[],"rewrittenLines":[],"notes":["fixed blocker: ..."]}`,
+    },
+  ], 0.72, true, `${label}-quality-rescue`)
+  return extractLyricsOnly(rescue.text) || await repairLyricsEnvelope(model, rescue.text || rescue.thinkBlock || '', brief, lyricPlan, `${label}-quality-rescue`) || lyrics
+}
+
+function fallbackLyricsFromPlan(plan: LyricPlan) {
+  const terms = plan.hookPhraseTarget || plan.songPremise.split(/\s+/).slice(0, 4).join(' ')
+  const cleanHook = terms.replace(/[^\p{L}\p{N}' -]/gu, ' ').replace(/\s+/g, ' ').trim() || 'this feeling'
+  const images = plan.sectionGoals.flatMap((section) => section.mustDo).filter(Boolean)
+  const imageA = images[0] || 'morning'
+  const imageB = images[1] || 'doorway'
+  const imageC = images[2] || 'road'
+  const linesFor = (section: LyricPlan['sectionGoals'][number]) => {
+    const name = section.section.toLowerCase()
+    if (/chorus/.test(name)) {
+      return [
+        `I keep ${cleanHook} close tonight`,
+        `Turn it up till it feels right`,
+        `If the world starts pulling away`,
+        `I sing ${cleanHook} anyway`,
+      ].slice(0, Math.max(3, Math.min(section.lineCount, 6)))
+    }
+    if (/bridge/.test(name)) {
+      return [
+        `Maybe I was scared to change`,
+        `Maybe hope can rearrange`,
+        `Everything I thought I knew`,
+        `Into something I can use`,
+      ].slice(0, Math.max(2, Math.min(section.lineCount, 4)))
+    }
+    if (/outro/.test(name)) {
+      return [
+        `${cleanHook} in the quiet air`,
+        `One last line and I leave it there`,
+        `If tomorrow calls my name`,
+        `I will answer less afraid`,
+      ].slice(0, Math.max(3, Math.min(section.lineCount, 4)))
+    }
+    if (/verse 2/.test(name)) {
+      return [
+        `By the ${imageC}, I learned to breathe`,
+        `Let the old weight fall from me`,
+        `What I lost became a spark`,
+        `Leading somewhere through the dark`,
+      ].slice(0, Math.max(4, Math.min(section.lineCount, 6)))
+    }
+    return [
+      `I found ${imageA} in my hands`,
+      `Tried to make the moment stand`,
+      `By the ${imageB}, I said your name`,
+      `Nothing small would feel the same`,
+    ].slice(0, Math.max(4, Math.min(section.lineCount, 6)))
+  }
+  return sanitizeLyrics(plan.sectionGoals.map((section) => `[${section.section}]\n${linesFor(section).join('\n')}`).join('\n\n'))
+}
+
 /** Grab one of ACE's curated example lyric sheets as a FORM reference for the
  *  writer (never content). Engine-off is fine - we just skip it. */
 async function fetchEngineExample(): Promise<string | null> {
@@ -1350,7 +2196,7 @@ async function pickResponsiveWriter(preferred?: string): Promise<{ model: string
   const first = await pickWriterModel(preferred)
   if (!first) throw new Error('No writer model available in Ollama')
   const installed = await listWriterModels()
-  const chain = [first, ...['qwen3:8b', 'qwen3:4b'].filter((m) => m !== first && installed.some((n) => n === m || n.startsWith(m)))]
+  const chain = [first, ...['qwen3:14b', 'qwen3:8b', 'qwen3:4b', 'qwen2.5:1.5b', 'llama3.2:3b'].filter((m) => m !== first && installed.some((n) => n === m || n.startsWith(m)))]
   for (const candidate of chain) {
     if (await modelIsResponsive(candidate)) {
       return { model: candidate, demotedFrom: candidate === first ? null : first }
@@ -1361,8 +2207,366 @@ async function pickResponsiveWriter(preferred?: string): Promise<{ model: string
   return { model: first, demotedFrom: null }
 }
 
+function clampScore(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function parseStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean) : []
+}
+
+function scoreSongBrief(brief: SongBrief, intent?: SongIntent | null, idea?: string): SongBrief['quality'] {
+  const topicLock = buildTopicLock(intent, idea)
+  const hay = [
+    brief.premise,
+    brief.listenerSituation,
+    brief.emotionalConflict,
+    brief.hookPromise,
+    brief.verse1Purpose,
+    brief.verse2Escalation,
+    brief.bridgeReveal,
+    brief.outroResolution,
+    brief.concreteImages.join(' '),
+  ].join(' ').toLowerCase()
+  const matchedTerms = topicLock.requiredTerms.filter((term) => hay.includes(term.toLowerCase()))
+  const humanWords = ['i ', 'you ', 'we ', 'friend', 'love', 'miss', 'want', 'need', 'afraid', 'hope', 'home', 'night', 'memory', 'tomorrow']
+  const concrete = brief.concreteImages.filter((image) => image.split(/\s+/).length <= 5).length
+  const issues: string[] = []
+  if (matchedTerms.length < Math.min(2, topicLock.requiredTerms.length)) issues.push('Brief does not anchor enough core topic words.')
+  if (!brief.hookPromise || brief.hookPromise.length < 18) issues.push('Hook promise is too vague.')
+  if (concrete < 3) issues.push('Brief needs 3-5 concrete song images.')
+  if (!humanWords.some((word) => hay.includes(word))) issues.push('Brief needs a clearer human listener situation.')
+  return {
+    relatability: clampScore(45 + humanWords.filter((word) => hay.includes(word)).length * 9 + (brief.listenerSituation.length > 45 ? 16 : 0)),
+    hookPotential: clampScore(brief.hookPromise.length > 35 ? 82 : brief.hookPromise.length > 18 ? 65 : 35),
+    genreFit: clampScore(brief.premise && brief.verse1Purpose && brief.verse2Escalation ? 78 : 45),
+    specificity: clampScore(40 + concrete * 12 + matchedTerms.length * 8),
+    groundedness: clampScore(50 + concrete * 10 - Math.max(0, brief.forbiddenDrift.length - 8) * 2),
+    songShapeReadiness: clampScore([brief.verse1Purpose, brief.verse2Escalation, brief.bridgeReveal, brief.outroResolution].filter((x) => x.length > 20).length * 22),
+    issues,
+  }
+}
+
+function makeSongBriefFallback(intent?: SongIntent | null, idea?: string, plan?: LyricPlan): SongBrief {
+  const topic = getIntentIdea(intent, idea) || 'a personal moment worth turning into a song'
+  const topicLock = buildTopicLock(intent, idea)
+  const images = topicLock.requiredTerms.slice(0, 5)
+  while (images.length < 3) images.push(['front door', 'late night street', 'half-lit room', 'old photograph'][images.length])
+  const title = intent?.songTitle?.trim() || plan?.hookPhraseTarget || 'the title'
+  const brief: SongBrief = {
+    premise: topic.slice(0, 260),
+    narrator: plan?.pointOfView || 'first-person singer with a direct, human voice',
+    listenerSituation: plan?.relatableListenerSituation || `Someone is trying to say the thing they usually hide, using ${images[0]} as the first concrete image.`,
+    emotionalConflict: plan?.emotionalAngle || 'wanting to move forward while still feeling the pull of the moment',
+    hookPromise: `The chorus pays off "${title}" as a line the listener can sing back.`,
+    verse1Purpose: plan?.sectionGoals.find((s) => /verse 1/i.test(s.section))?.purpose || 'show the first recognizable moment and the emotional problem',
+    verse2Escalation: plan?.sectionGoals.find((s) => /verse 2/i.test(s.section))?.purpose || 'raise the stakes with a new detail instead of repeating verse one',
+    bridgeReveal: plan?.sectionGoals.find((s) => /bridge/i.test(s.section))?.purpose || 'turn the meaning inward and reveal what the singer finally understands',
+    outroResolution: plan?.sectionGoals.find((s) => /outro/i.test(s.section))?.purpose || 'close with one final concrete image and emotional release',
+    forbiddenDrift: [...new Set([...(plan?.forbiddenDriftWords ?? []), ...topicLock.forbiddenDrift])].slice(0, 12),
+    concreteImages: images.slice(0, 5),
+    quality: { relatability: 0, hookPotential: 0, genreFit: 0, specificity: 0, groundedness: 0, songShapeReadiness: 0, issues: [] },
+    createdAt: new Date().toISOString(),
+  }
+  return { ...brief, quality: scoreSongBrief(brief, intent, idea) }
+}
+
+function parseSongBrief(raw: string, fallback: SongBrief, intent?: SongIntent | null, idea?: string): SongBrief {
+  for (const candidate of extractJsonCandidates(raw)) {
+    try {
+      const parsed = JSON.parse(candidate) as Partial<Record<keyof SongBrief, unknown>>
+      const brief: SongBrief = {
+        premise: typeof parsed.premise === 'string' ? parsed.premise.trim() : fallback.premise,
+        narrator: typeof parsed.narrator === 'string' ? parsed.narrator.trim() : fallback.narrator,
+        listenerSituation: typeof parsed.listenerSituation === 'string' ? parsed.listenerSituation.trim() : fallback.listenerSituation,
+        emotionalConflict: typeof parsed.emotionalConflict === 'string' ? parsed.emotionalConflict.trim() : fallback.emotionalConflict,
+        hookPromise: typeof parsed.hookPromise === 'string' ? parsed.hookPromise.trim() : fallback.hookPromise,
+        verse1Purpose: typeof parsed.verse1Purpose === 'string' ? parsed.verse1Purpose.trim() : fallback.verse1Purpose,
+        verse2Escalation: typeof parsed.verse2Escalation === 'string' ? parsed.verse2Escalation.trim() : fallback.verse2Escalation,
+        bridgeReveal: typeof parsed.bridgeReveal === 'string' ? parsed.bridgeReveal.trim() : fallback.bridgeReveal,
+        outroResolution: typeof parsed.outroResolution === 'string' ? parsed.outroResolution.trim() : fallback.outroResolution,
+        forbiddenDrift: parseStringArray(parsed.forbiddenDrift).length ? parseStringArray(parsed.forbiddenDrift) : fallback.forbiddenDrift,
+        concreteImages: parseStringArray(parsed.concreteImages).length ? parseStringArray(parsed.concreteImages).slice(0, 5) : fallback.concreteImages,
+        quality: fallback.quality,
+        createdAt: new Date().toISOString(),
+      }
+      return { ...brief, quality: scoreSongBrief(brief, intent, idea) }
+    } catch {
+      // Fall through to deterministic brief.
+    }
+  }
+  return fallback
+}
+
+function songBriefPrompt(baseBrief: string, lyricPlan: LyricPlan) {
+  return `${baseBrief}
+
+Create a SONG BRIEF before lyrics. This is not a video prompt and not a plot synopsis.
+It must be song-shaped, relatable, and useful for writing sections.
+
+Return STRICT JSON only:
+{
+  "premise":"one sentence song premise",
+  "narrator":"who is singing and POV",
+  "listenerSituation":"everyday human situation the listener recognizes",
+  "emotionalConflict":"what feeling is unresolved",
+  "hookPromise":"what the chorus will prove or repeat",
+  "verse1Purpose":"what Verse 1 reveals",
+  "verse2Escalation":"how Verse 2 moves forward",
+  "bridgeReveal":"what the bridge turns or admits",
+  "outroResolution":"how the song closes",
+  "forbiddenDrift":["things not to write about"],
+  "concreteImages":["3-5 grounded images"]
+}
+
+Planning constraints:
+${lyricPlanBrief(lyricPlan)}
+
+No screenplay, no film scene, no long plot. Make this a music brief.`
+}
+
+function scoreHookCandidate(lines: string[], label: string, brief: SongBrief, intent?: SongIntent | null, idea?: string): HookCandidate {
+  const cleanLines = lines.map((line) => line.trim()).filter((line) => isSingableLyricLine(line)).slice(0, 4)
+  const text = cleanLines.join(' ').toLowerCase()
+  const topicLock = buildTopicLock(intent, idea)
+  const titleTerms = (intent?.songTitle || '').toLowerCase().split(/\W+/).filter((term) => term.length > 2)
+  const topicHits = topicLock.requiredTerms.filter((term) => text.includes(term.toLowerCase())).length
+  const titleHits = titleTerms.filter((term) => text.includes(term)).length
+  const avgSyllables = cleanLines.length ? cleanLines.reduce((sum, line) => sum + estimateSyllables(line), 0) / cleanLines.length : 99
+  const repeated = cleanLines.some((line, index) => cleanLines.findIndex((other) => other.toLowerCase() === line.toLowerCase()) !== index)
+  const scores = {
+    titlePayoff: clampScore(45 + titleHits * 18 + (text.includes(brief.hookPromise.toLowerCase().split(/\W+/)[0] ?? '') ? 8 : 0)),
+    singability: clampScore(100 - Math.abs(avgSyllables - 8) * 7),
+    memorability: clampScore(50 + (repeated ? 18 : 0) + (cleanLines.length <= 4 ? 12 : 0) + (/[?!]/.test(cleanLines.join('')) ? 4 : 0)),
+    emotionalClarity: clampScore(brief.emotionalConflict.split(/\W+/).filter((term) => term.length > 3 && text.includes(term.toLowerCase())).length * 12 + 55),
+    topicMatch: clampScore(40 + topicHits * 18),
+    rhymePotential: clampScore(cleanLines.length >= 2 ? 68 + Math.min(20, cleanLines.filter((line) => endRhymeKey(line)).length * 4) : 35),
+  }
+  const score = clampScore(Object.values(scores).reduce((sum, value) => sum + value, 0) / 6)
+  return {
+    id: crypto.randomUUID(),
+    label,
+    lines: cleanLines.length ? cleanLines : fallbackHookLines(brief, intent, idea),
+    score,
+    scores,
+    notes: [
+      scores.topicMatch < 65 ? 'Needs stronger topic lock.' : 'Topic is present.',
+      scores.singability < 65 ? 'Line lengths may be hard to sing.' : 'Singable line lengths.',
+      scores.titlePayoff < 65 ? 'Could pay off the title more clearly.' : 'Title payoff is clear.',
+    ],
+  }
+}
+
+function fallbackHookLines(brief: SongBrief, intent?: SongIntent | null, idea?: string) {
+  const title = (intent?.songTitle || '').trim()
+  const topic = buildTopicLock(intent, idea).requiredTerms.find(Boolean) || brief.concreteImages[0] || 'this moment'
+  if (title && title.length <= 34) {
+    return [
+      `${title}, I keep holding on`,
+      `When the whole night tries to let me go`,
+      `${title}, I can still sing along`,
+      `Till the last little light comes home`,
+    ]
+  }
+  return [
+    `I keep holding on to ${topic}`,
+    `When the whole night tries to let me go`,
+    `I keep singing through ${topic}`,
+    `Till the last little light comes home`,
+  ]
+}
+
+function parseHookCandidates(raw: string, brief: SongBrief, intent?: SongIntent | null, idea?: string): HookCandidate[] {
+  for (const candidate of extractJsonCandidates(raw)) {
+    try {
+      const parsed = JSON.parse(candidate) as { hooks?: unknown; bestHook?: unknown }
+      if (Array.isArray(parsed.hooks)) {
+        const hooks = parsed.hooks.flatMap((item, index) => {
+          if (!item || typeof item !== 'object') return []
+          const object = item as { name?: unknown; label?: unknown; lines?: unknown }
+          const lines = parseStringArray(object.lines)
+          return [scoreHookCandidate(lines, String(object.name || object.label || `Hook ${index + 1}`), brief, intent, idea)]
+        }).filter((hook) => hook.lines.length)
+        const best = String(parsed.bestHook || '').toLowerCase()
+        const selected = hooks.find((hook) => hook.label.toLowerCase() === best) ?? [...hooks].sort((a, b) => b.score - a.score)[0]
+        return hooks.map((hook) => ({ ...hook, selected: hook.id === selected?.id })).slice(0, 8)
+      }
+    } catch {
+      // Plain parsing below.
+    }
+  }
+  const buckets: { label: string; lines: string[] }[] = []
+  let current: { label: string; lines: string[] } | null = null
+  for (const line of stripLeakedReasoning(raw).split(/\r?\n/)) {
+    const trimmed = line.trim().replace(/^[-*]\s*/, '')
+    if (!trimmed) continue
+    const hookLabel = trimmed.match(/^(?:hook|candidate|best hook)\s*([a-z0-9]*)[:.-]\s*(.*)$/i)
+    if (hookLabel) {
+      if (current) buckets.push(current)
+      current = { label: `Hook ${hookLabel[1] || buckets.length + 1}`, lines: hookLabel[2] ? [hookLabel[2].trim()] : [] }
+    } else if (current && !NON_LYRIC_LINE_RE.test(trimmed)) {
+      current.lines.push(trimmed)
+    }
+  }
+  if (current) buckets.push(current)
+  const hooks = buckets.length
+    ? buckets.map((bucket) => scoreHookCandidate(bucket.lines, bucket.label, brief, intent, idea))
+    : [
+        scoreHookCandidate(fallbackHookLines(brief, intent, idea), 'Fallback Hook', brief, intent, idea),
+        scoreHookCandidate([`I keep the promise in my hands`, 'Even when the room goes blue', `I turn the hurt into a chance`, 'And bring it back to you'], 'Fallback Hook 2', brief, intent, idea),
+      ]
+  const best = [...hooks].sort((a, b) => b.score - a.score)[0]
+  return hooks.map((hook) => ({ ...hook, selected: hook.id === best.id })).slice(0, 8)
+}
+
+function sectionTag(section: string) {
+  return `[${section}]`
+}
+
+function sectionPurposeFromBrief(section: LyricPlanSection, brief: SongBrief) {
+  if (/verse 1/i.test(section.section)) return brief.verse1Purpose
+  if (/verse 2/i.test(section.section)) return brief.verse2Escalation
+  if (/bridge/i.test(section.section)) return brief.bridgeReveal
+  if (/outro/i.test(section.section)) return brief.outroResolution
+  if (/chorus|hook/i.test(section.section)) return brief.hookPromise
+  return section.purpose
+}
+
+function scoreSectionDraft(section: LyricPlanSection, lyrics: string, purpose: string): SectionDraft {
+  const body = normalizeSectionLyrics(section.section, extractLyricsOnly(lyrics) || lyrics)
+  const lines = sungLinesBySection(body)[section.section.toLowerCase()] ?? body.split(/\r?\n/).filter((line) => line.trim() && !LYRIC_SECTION_RE.test(line))
+  const syllables = lines.map(estimateSyllables)
+  const avg = syllables.length ? syllables.reduce((sum, value) => sum + value, 0) / syllables.length : 99
+  const lineScore = clampScore(100 - Math.abs(lines.length - section.lineCount) * 12)
+  const syllableScore = clampScore(100 - Math.max(0, section.syllableMin - avg, avg - section.syllableMax) * 10)
+  const purposeWords = purpose.toLowerCase().split(/\W+/).filter((term) => term.length > 4).slice(0, 8)
+  const purposeScore = clampScore(45 + purposeWords.filter((term) => body.toLowerCase().includes(term)).length * 10)
+  const score = clampScore((lineScore + syllableScore + purposeScore) / 3)
+  return {
+    section: section.section,
+    lyrics: body,
+    score,
+    verdict: score >= 78 ? 'keep' : score >= 55 ? 'rewrite' : lines.length < Math.max(2, section.lineCount - 2) ? 'expand' : 'rewrite',
+    purpose,
+    repairReason: score >= 78 ? undefined : `Needs ${section.lineCount} lines, ${section.syllableMin}-${section.syllableMax} syllables, and clearer purpose: ${purpose}`,
+    lockedLines: score >= 78 ? lines : lines.filter((line) => estimateSyllables(line) >= section.syllableMin && estimateSyllables(line) <= section.syllableMax).slice(0, 2),
+  }
+}
+
+async function writeSectionDraft(
+  model: string,
+  plainLyricsMode: boolean,
+  baseBrief: string,
+  songBrief: SongBrief,
+  lyricPlan: LyricPlan,
+  section: LyricPlanSection,
+  selectedHook: HookCandidate,
+  previousSections: SectionDraft[],
+) {
+  const purpose = sectionPurposeFromBrief(section, songBrief)
+  const hookText = selectedHook.lines.join('\n')
+  if (/chorus/i.test(section.section) && !/final/i.test(section.section)) {
+    return scoreSectionDraft(section, hookText, purpose)
+  }
+  const response = await chat(model, [
+    { role: 'system', content: SONGWRITER_SYSTEM },
+    {
+      role: 'user',
+      content: `${baseBrief}
+
+SONG BRIEF:
+${JSON.stringify(songBrief, null, 2)}
+
+APPROVED HOOK:
+${hookText}
+
+Already written sections:
+${previousSections.map((draft) => normalizeSectionLyrics(draft.section, draft.lyrics)).join('\n\n') || 'none'}
+
+Write ONLY this section now: ${sectionTag(section.section)}
+Purpose: ${purpose}
+Line count target: ${section.lineCount}
+Rhyme/meter target: ${section.rhymeScheme}, ${section.syllableMin}-${section.syllableMax} syllables per line
+Must include or imply: ${section.mustDo.join(', ') || songBrief.concreteImages.join(', ')}
+Avoid: ${section.avoid.join(', ')}
+
+Rules:
+- Output only the section tag and sung lyric lines for this section.
+- No critique, no notes, no rhyme labels, no screenplay, no markdown.
+- Use the approved hook if this is Final Chorus, with small emotional lift.
+- Make this section support the hook promise.
+
+${plainLyricsMode ? 'Return plain tagged lyrics only.' : `Return STRICT JSON only: {"lyrics":"${sectionTag(section.section)}\\nline\\nline"}`}`,
+    },
+  ], /chorus/i.test(section.section) ? 0.72 : 0.82, true, `section-${section.section}`)
+  const clean = extractLyricsOnly(response.text) || await repairLyricsEnvelope(model, response.text || response.thinkBlock || '', baseBrief, lyricPlan, `section-${section.section}`)
+  return scoreSectionDraft(section, clean || fallbackLyricsFromPlan({ ...lyricPlan, sectionGoals: [section] }), purpose)
+}
+
+function compileSections(sections: SectionDraft[]) {
+  return sanitizeLyrics(sections.map((section) => normalizeSectionLyrics(section.section, section.lyrics)).join('\n\n'))
+}
+
 /** Scene -> draft -> critique -> rewrite, looping while the critic rejects
  *  (max 2 rewrites). Thinking mode on for the creative passes. */
+/** Fast mode: write the whole song in one focused pass, then score-and-advise
+ *  (never block). ~1-2 Ollama calls instead of 20-40, so a blueprint lands in
+ *  a couple minutes instead of 30+. Deeper critique is the opt-in 'deep' cook. */
+async function craftLyricsFast(input: {
+  idea: string
+  tags: string[]
+  language: string
+  structure: string[]
+  existingLyrics?: string
+  intent?: SongIntent
+}, model: string): Promise<LyricsCraftResult> {
+  const lyricPlan = createFallbackLyricPlan(input.intent, input.idea)
+  const structurePlan = structurePlanFor(input.intent)
+  const wantsThink = /^qwen3:/i.test(model)
+  emitWriterProgress({ stage: 'planning', note: `Fast draft with ${model}: planning ${lyricPlan.vibe} ${lyricPlan.genre}, hook "${lyricPlan.hookPhraseTarget}".` })
+
+  const brief = [
+    buildIntentBrief(input.intent, input.idea),
+    input.tags.length ? `Musical style: ${input.tags.join(', ')}` : '',
+    MUSIC_THEORY_SANDWICH,
+    structurePlan.text,
+    lyricPlanBrief(lyricPlan),
+    input.language && input.language !== 'en' ? `Write the lyrics in language code: ${input.language}` : 'Write the lyrics in English.',
+    input.existingLyrics?.trim() ? `The user has a draft - mine it for anything good, then surpass it:\n${input.existingLyrics.trim()}` : '',
+    'Every lyric line must clearly belong to the user idea. Write the COMPLETE song now: every planned section, in order, with [Section] tags, singable lines, and the planned rhyme scheme. Return ONLY the lyrics with section tags - no commentary, no critique, no JSON.',
+  ].filter(Boolean).join('\n\n')
+
+  emitWriterProgress({ stage: 'drafting', note: 'Writing the full song in one pass.' })
+  let lyrics = ''
+  try {
+    const res = await chat(model, [
+      { role: 'system', content: SONGWRITER_SYSTEM },
+      { role: 'user', content: brief },
+    ], 0.85, wantsThink, 'fast-draft')
+    lyrics = extractLyricsOnly(res.text) || ''
+    if (!lyrics) lyrics = await repairLyricsEnvelope(model, res.text || res.thinkBlock || '', brief, lyricPlan, 'fast-draft') || ''
+  } catch (error) {
+    emitWriterProgress({ stage: 'drafting', note: `Fast draft hit an error (${error instanceof Error ? error.message : 'unknown'}); using a safe starter lyric from the plan.` })
+  }
+  if (!lyrics || !sanitizeLyrics(lyrics).trim()) lyrics = fallbackLyricsFromPlan(lyricPlan)
+  lyrics = sanitizeLyrics(lyrics)
+
+  const quality = buildQualityReport(lyrics, null, input.intent, input.idea, undefined, lyricPlan)
+  const draftSnapshot = makeDraftSnapshot('Draft 1', lyrics, 'Fast one-pass draft. Use Deep Cook for a multi-round critic polish.', input.intent, input.idea)
+  emitWriterProgress({ stage: 'finalizing', note: `Fast draft ready (quality ${quality.score}/100). Edit it directly or run Deep Cook to refine.`, draft: draftSnapshot })
+  return {
+    plan: lyricPlan,
+    repairs: [],
+    lyrics,
+    draft: lyrics,
+    drafts: [draftSnapshot],
+    critique: '',
+    quality,
+    model,
+    createdAt: new Date().toISOString(),
+  }
+}
+
 export async function craftLyrics(input: {
   idea: string
   tags: string[]
@@ -1372,18 +2576,39 @@ export async function craftLyrics(input: {
   model?: string
   intent?: SongIntent
 }): Promise<LyricsCraftResult> {
-  const picked = await pickResponsiveWriter(input.model)
+  const settings = getEngineSettings()
+  const picked = await pickResponsiveWriter(input.model || settings.sectionWriterModel || settings.lyricWriterModel)
   const model = picked.model
+  // Fast mode: one focused pass. Skips the multi-role probes, section loop, and
+  // critic/rescue loops entirely - the source of the 30-minute blueprints.
+  if ((settings.lyricCookMode ?? 'fast') === 'fast') {
+    return craftLyricsFast(input, model)
+  }
+  const pickRoleModel = async (preferred?: string) => {
+    if (input.model) return model
+    return (await pickResponsiveWriter(preferred || model)).model
+  }
+  const briefModel = await pickRoleModel(settings.ideaWriterModel)
+  const hookModel = await pickRoleModel(settings.hookWriterModel)
+  const sectionModel = await pickRoleModel(settings.sectionWriterModel)
+  const criticModel = await pickRoleModel(settings.criticModel)
+  const prosodyModel = await pickRoleModel(settings.prosodyModel)
+  const finalModel = await pickRoleModel(settings.finalCompilerModel)
   if (picked.demotedFrom) {
     emitWriterProgress({ stage: 'planning', note: `${picked.demotedFrom} is starved for VRAM, so the writer is using ${model} instead.` })
   }
 
-  const plan = structurePlanFor(input.intent)
+  const structurePlan = structurePlanFor(input.intent)
+  const lyricPlan = createFallbackLyricPlan(input.intent, input.idea)
+  const plainLyricsMode = modelPrefersPlainLyrics(sectionModel)
   const engineExample = await fetchEngineExample()
   const brief = [
     buildIntentBrief(input.intent, input.idea),
     input.tags.length ? `Musical style: ${input.tags.join(', ')}` : '',
-    plan.text,
+    MUSIC_THEORY_SANDWICH,
+    BLUEPRINT_PROMPT_SANDWICH,
+    structurePlan.text,
+    lyricPlanBrief(lyricPlan),
     input.language && input.language !== 'en' ? `Write the lyrics in language code: ${input.language}` : 'Write the lyrics in English.',
     input.existingLyrics?.trim()
       ? `The user has a draft - mine it for anything good, then surpass it:\n${input.existingLyrics.trim()}`
@@ -1394,25 +2619,65 @@ export async function craftLyrics(input: {
       : '',
   ].filter(Boolean).join('\n\n')
 
-  // Pass 0 - invent the concrete story so the draft can't be generic.
+  // Pass 0 - create a song-shaped brief so the draft can't become a generic
+  // plot synopsis or unrelated poem.
   const drafts: LyricsDraftSnapshot[] = []
-  emitWriterProgress({ stage: 'planning', note: 'Building the song intent packet, topic lock, required structure, and production boundaries.' })
-  const sceneRes = await chat(model, [
+  const repairs: string[] = []
+  emitWriterProgress({ stage: 'planning', note: `Planning: ${lyricPlan.vibe} ${lyricPlan.genre}; hook target "${lyricPlan.hookPhraseTarget}"; ${lyricPlan.sectionGoals.length} sections with rhyme and syllable targets.` })
+  const fallbackBrief = makeSongBriefFallback(input.intent, input.idea, lyricPlan)
+  const briefRes = await chat(briefModel, [
     { role: 'system', content: SCENE_SYSTEM },
-    { role: 'user', content: brief },
-  ], 0.85, true, 'scene')
-  const scene = sceneRes.text || sceneRes.thinkBlock || brief
-  emitWriterProgress({ stage: 'planning', note: `Song worksheet: ${progressSummary(scene)}` })
+    { role: 'user', content: songBriefPrompt(brief, lyricPlan) },
+  ], 0.7, true, 'song-brief')
+  let songBrief = parseSongBrief(briefRes.text || briefRes.thinkBlock || '', fallbackBrief, input.intent, input.idea)
+  if (songBrief.quality.issues.length) {
+    repairs.push(`Brief repaired before drafting: ${songBrief.quality.issues.join(' ')}`)
+    songBrief = { ...fallbackBrief, quality: scoreSongBrief(fallbackBrief, input.intent, input.idea) }
+  }
+  emitWriterProgress({ stage: 'planning', note: `Song brief: ${songBrief.premise} Hook promise: ${songBrief.hookPromise}`, brief: songBrief })
 
-  // Pass 1 - draft, with deliberate thinking.
-  emitWriterProgress({ stage: 'drafting', note: 'Writing Draft 1 as tagged, singable lyrics from the worksheet.' })
-  const draftRes = await chat(model, [
+  emitWriterProgress({ stage: 'planning', note: 'Writing hook candidates first so the song has a center before verses are drafted.' })
+  const hookRes = await chat(hookModel, [
     { role: 'system', content: SONGWRITER_SYSTEM },
-    { role: 'user', content: `${brief}\n\nYour story worksheet (use this material - it is the song's world):\n${scene}\n\nReturn a JSON object only: {"lyrics":"[Verse 1]\\n...","keptLines":[],"rewrittenLines":[]}. The lyrics string must contain the full song with section tags.` },
-  ], 0.9, true, 'draft')
-  const draft = extractLyricsOnly(draftRes.text)
+    {
+      role: 'user',
+      content: `${brief}
+
+${lyricPlanBrief(lyricPlan)}
+
+Story worksheet:
+${JSON.stringify(songBrief, null, 2)}
+
+Hook-first task:
+- Write 6 chorus hook candidates.
+- Each candidate must be 2-4 sung lines.
+- Tie directly to the title/idea/topic lock.
+- Make it repeatable, emotionally clear, and singable.
+- No verses yet, no critique, no explanation.
+
+${plainLyricsMode
+  ? 'Return plain text only: Hook A, Hook B, Hook C, Hook D, Hook E, Hook F, and Best Hook. No analysis paragraph.'
+  : 'Return STRICT JSON only:\n{"hooks":[{"name":"Hook A","lines":["line","line"]},{"name":"Hook B","lines":["line","line"]},{"name":"Hook C","lines":["line","line"]},{"name":"Hook D","lines":["line","line"]},{"name":"Hook E","lines":["line","line"]},{"name":"Hook F","lines":["line","line"]}],"bestHook":"Hook A","reason":"short reason"}'}`,
+    },
+  ], 0.82, true, 'hook-draft')
+  const hookBrief = stripLeakedReasoning(hookRes.text).slice(0, 2200)
+  const hooks = parseHookCandidates(hookBrief, songBrief, input.intent, input.idea)
+  const selectedHook = hooks.find((hook) => hook.selected) ?? [...hooks].sort((a, b) => b.score - a.score)[0]
+  emitWriterProgress({ stage: 'planning', note: `Selected hook (${selectedHook.score}/100): ${selectedHook.lines.join(' / ')}`, hooks })
+
+  // Pass 1 - section assembly. Each section is written with its own purpose,
+  // meter target, and relation to the approved hook.
+  emitWriterProgress({ stage: 'drafting', note: 'Writing Draft 1 section by section so weak parts can be repaired without destroying good bars.' })
+  const sectionDrafts: SectionDraft[] = []
+  for (const section of lyricPlan.sectionGoals) {
+    const sectionDraft = await writeSectionDraft(sectionModel, plainLyricsMode, brief, songBrief, lyricPlan, section, selectedHook, sectionDrafts)
+    sectionDrafts.push(sectionDraft)
+    emitWriterProgress({ stage: 'drafting', note: `${section.section}: ${sectionDraft.score}/100 ${sectionDraft.verdict}`, section: sectionDraft })
+  }
+  let draft = compileSections(sectionDrafts)
   if (!draft) {
-    throw new Error('The writer returned planning or critique text instead of tagged lyrics. DoReMii blocked it so it does not become a bad blueprint.')
+    emitWriterProgress({ stage: 'drafting', note: 'The section compiler found no clean lyrics, so DoReMii is creating a safe starter lyric from the plan.' })
+    draft = fallbackLyricsFromPlan(lyricPlan)
   }
   const draftOne = makeDraftSnapshot('Draft 1', draft, 'First complete lyric draft from the song worksheet.', input.intent, input.idea)
   drafts.push(draftOne)
@@ -1423,20 +2688,26 @@ export async function craftLyrics(input: {
   let current = draft
   let critique: string
   let validationIssues = validateLyrics(current, input.intent, input.idea)
-  const maxRewriteRounds = /qwen3:4b/i.test(model) ? 1 : 2
+  const maxRewriteRounds = settings.lyricCookMode === 'unbounded'
+    ? Number.POSITIVE_INFINITY
+    : settings.lyricCookMode === 'deep'
+      ? (/qwen3:14b/i.test(model) ? 8 : /qwen3:8b/i.test(model) ? 6 : 3)
+      : (/qwen3:14b/i.test(model) ? 4 : /qwen3:8b/i.test(model) ? 3 : /qwen3:4b/i.test(model) ? 1 : 2)
+  let bestQualityScore = buildQualityReport(current, null, input.intent, input.idea, undefined, lyricPlan).score
+  let stalledRepairRounds = 0
   for (let round = 0; round < maxRewriteRounds; round += 1) {
     emitWriterProgress({ stage: 'self-critique', note: `Critiquing ${drafts[drafts.length - 1]?.label ?? 'the current draft'} against the prompt, structure, and flow rules.` })
-    const critiqueRes = await chat(model, [
+    const critiqueRes = await chat(criticModel, [
       { role: 'system', content: CRITIC_SYSTEM },
       { role: 'user', content: `The song brief was:\n${brief}\n\nLocal validator issues that are automatic rejects:\n${validationIssues.length ? validationIssues.map((issue) => `- ${issue}`).join('\n') : '- none'}\n\nThe lyrics to critique:\n${current}` },
     ], 0.4, false, `critique-${round + 1}`)
     critique = critiqueRes.text
 
-    const flowRes = await chat(model, [
+    const flowRes = await chat(prosodyModel, [
       { role: 'system', content: RHYME_FLOW_SYSTEM },
       { role: 'user', content: `${buildIntentBrief(input.intent, input.idea)}\n\nCheck these lyrics for rhyme, flow, structure, and singability:\n${current}` },
     ], 0.25, false, `flow-${round + 1}`)
-    const adherence = await runAdherenceCheck(model, current, input.intent, input.idea)
+    const adherence = await runAdherenceCheck(criticModel, current, input.intent, input.idea)
     critique = [
       critique,
       `RHYME/FLOW CHECK:\n${flowRes.text}`,
@@ -1450,54 +2721,106 @@ export async function craftLyrics(input: {
 
     emitWriterProgress({ stage: 'rewrite', note: 'The draft did not clear every gate, so the writer is rebuilding weak sections instead of appending notes.' })
     validationIssues = validateLyrics(current, input.intent, input.idea)
-    const repairReport = buildQualityReport(current, critique, input.intent, input.idea, adherence)
+    const repairReport = buildQualityReport(current, critique, input.intent, input.idea, adherence, lyricPlan)
     const lockedLines = repairReport.lineDecisions?.filter((line) => line.decision === 'keep').map((line) => `[${line.section}] ${line.text}`) ?? []
     const repairLines = repairReport.lineDecisions?.filter((line) => line.decision !== 'keep').map((line) => `[${line.section} line ${line.lineNumber}] ${line.decision.toUpperCase()}: ${line.text} (${line.reasons.join('; ')})`) ?? []
-    const rewriteRes = await chat(model, [
+    const rewriteRes = await chat(finalModel, [
       { role: 'system', content: SONGWRITER_SYSTEM },
-      { role: 'user', content: `${brief}\n\nStory worksheet:\n${scene}` },
+      { role: 'user', content: `${brief}\n\nSong brief:\n${JSON.stringify(songBrief, null, 2)}\n\nApproved hook:\n${selectedHook.lines.join('\n')}` },
       { role: 'assistant', content: current },
-      { role: 'user', content: `A professional critic and local validator reviewed your lyrics.\n\nCritic review:\n${critique}\n\nLocal validator rejects:\n${validationIssues.length ? validationIssues.map((issue) => `- ${issue}`).join('\n') : '- none'}\n\nRewrite from scratch only if the section is structurally broken. Otherwise perform a surgical rewrite. Requirements:\n- Output ONLY sung lyrics with section tags.\n- ${plan.text.replace(/\n/g, '\n- ')}\n- Keep every verse and hook anchored to the topic lock in the song intent packet.\n- Preserve the strongest on-topic bars, hooks, and callbacks from the previous draft.\n- Replace weak, off-topic, unsingable, filler, or validator-rejected lines.\n- One core metaphor for the whole song; no adjective-stacking.\n- 6-10 syllables per line, consistent within each section.\n- Verse 2 must progress from Verse 1; Bridge must turn the song; Outro must close with 3-4 sung lines.\n- No screenplay, no phone/camera/crowd descriptions - every non-tag line is sung.\n- Strong hook in the chorus; do not repeat verses verbatim.\n- Do not paste critic notes, rhyme labels, or planning text into the lyrics.\n\nLOCKED GOOD BARS - preserve these unless grammar forces a tiny edit:\n${lockedLines.length ? lockedLines.slice(0, 24).map((line) => `- ${line}`).join('\n') : '- none identified'}\n\nLINES TO REPAIR - only these should change unless a section is broken:\n${repairLines.length ? repairLines.slice(0, 24).map((line) => `- ${line}`).join('\n') : '- none identified'}\n\nReturn a JSON object only: {"lyrics":"[Verse 1]\\n...","keptLines":["exact preserved line"],"rewrittenLines":["changed line"]}. The lyrics string must contain the full revised song with section tags.` },
+        { role: 'user', content: `A professional critic and local validator reviewed your lyrics.\n\nCritic review:\n${critique}\n\nLocal validator rejects:\n${validationIssues.length ? validationIssues.map((issue) => `- ${issue}`).join('\n') : '- none'}\n\nRewrite from scratch only if the section is structurally broken. Otherwise perform a surgical rewrite. Requirements:\n- Output ONLY sung lyrics with section tags.\n- ${structurePlan.text.replace(/\n/g, '\n- ')}\n- ${lyricPlanBrief(lyricPlan).replace(/\n/g, '\n- ')}\n- Keep every verse and hook anchored to the topic lock in the song intent packet.\n- Preserve the strongest on-topic bars, hooks, and callbacks from the previous draft.\n- Replace weak, off-topic, unsingable, filler, or validator-rejected lines.\n- One core metaphor for the whole song; no adjective-stacking.\n- Follow the planned syllable ranges and rhyme schemes section by section.\n- Verse 2 must progress from Verse 1; Bridge must turn the song; Outro must close with 3-4 sung lines.\n- No screenplay, no phone/camera/crowd descriptions - every non-tag line is sung.\n- Strong hook in the chorus; do not repeat verses verbatim.\n- Do not paste critic notes, rhyme labels, or planning text into the lyrics.\n\nLOCKED GOOD BARS - preserve these unless grammar forces a tiny edit:\n${lockedLines.length ? lockedLines.slice(0, 24).map((line) => `- ${line}`).join('\n') : '- none identified'}\n\nLINES TO REPAIR - only these should change unless a section is broken:\n${repairLines.length ? repairLines.slice(0, 24).map((line) => `- ${line}`).join('\n') : '- none identified'}\n\n${plainLyricsMode ? 'Return ONLY the full revised song lyrics with section tags.' : `Return a JSON object only: {"plan":${JSON.stringify(lyricPlan)},"lyrics":"[Verse 1]\\n...","keptLines":["exact preserved line"],"rewrittenLines":["changed line"],"sectionScores":[],"notes":[]}. The lyrics string must contain the full revised song with section tags.`}` },
     ], 0.85, true, `rewrite-${round + 1}`)
-    const rewritten = extractLyricsOnly(rewriteRes.text)
+    let rewritten = extractLyricsOnly(rewriteRes.text)
     if (!rewritten) {
-      emitWriterProgress({ stage: 'rewrite', note: 'The rewrite returned notes instead of tagged lyrics, so DoReMii kept the previous draft and will not treat notes as lyrics.' })
+      emitWriterProgress({ stage: 'rewrite', note: 'The rewrite returned notes instead of tagged lyrics, so DoReMii is repairing that draft before continuing.' })
+      rewritten = await repairLyricsEnvelope(finalModel, rewriteRes.text || rewriteRes.thinkBlock || '', brief, lyricPlan, `rewrite-${round + 1}`)
+    }
+    if (!rewritten) {
+      emitWriterProgress({ stage: 'rewrite', note: 'The repair still failed, so DoReMii kept the previous clean draft and will not treat notes as lyrics.' })
       break
     }
     current = rewritten
+    repairs.push(`Rewrite round ${round + 1}: ${validationIssues.slice(0, 3).join(' ') || 'critic requested stronger section repair.'}`)
     validationIssues = validateLyrics(current, input.intent, input.idea)
     const snapshot = makeDraftSnapshot(`Draft ${drafts.length + 1}`, current, `Surgical rewrite round ${round + 1} after critic and flow checks.`, input.intent, input.idea, drafts[drafts.length - 1]?.lyrics ?? null)
     drafts.push(snapshot)
+    const latestScore = snapshot.quality?.score ?? 0
+    if (latestScore > bestQualityScore + 4) {
+      bestQualityScore = latestScore
+      stalledRepairRounds = 0
+    } else {
+      stalledRepairRounds += 1
+      if (settings.lyricCookMode === 'unbounded' && stalledRepairRounds >= 3) {
+        emitWriterProgress({ stage: 'rewrite', note: 'The last repair passes stopped improving, so DoReMii is ending the cook instead of looping forever on the same weak pattern.' })
+        break
+      }
+    }
     emitWriterProgress({ stage: 'rewrite', note: `${snapshot.label} is ready. Comparing it against the previous draft and running a fresh quality gate.`, draft: snapshot })
   }
 
   emitWriterProgress({ stage: 'finalizing', note: 'Running the final critic, rhyme/flow check, prompt-adherence check, and quality score.' })
   const finalIssues = validateLyrics(current, input.intent, input.idea)
-  const finalCritiqueRes = await chat(model, [
+  const finalCritiqueRes = await chat(criticModel, [
     { role: 'system', content: CRITIC_SYSTEM },
     { role: 'user', content: `Final quality gate. The song brief was:\n${brief}\n\nLocal validator issues:\n${finalIssues.length ? finalIssues.map((issue) => `- ${issue}`).join('\n') : '- none'}\n\nFinal candidate lyrics:\n${current}` },
   ], 0.25, false, 'final-critique')
-  const finalFlowRes = await chat(model, [
+  const finalFlowRes = await chat(prosodyModel, [
     { role: 'system', content: RHYME_FLOW_SYSTEM },
     { role: 'user', content: `${buildIntentBrief(input.intent, input.idea)}\n\nFinal rhyme/flow check:\n${current}` },
   ], 0.2, false, 'final-flow')
-  const finalAdherence = await runAdherenceCheck(model, current, input.intent, input.idea)
+  const finalAdherence = await runAdherenceCheck(criticModel, current, input.intent, input.idea)
   critique = [
     finalCritiqueRes.text,
     `RHYME/FLOW CHECK:\n${finalFlowRes.text}`,
     finalAdherence ? `ADHERENCE CHECK:\nSCORE: ${finalAdherence.score}\nVERDICT: ${finalAdherence.verdict}\nNOTES:\n${finalAdherence.notes.map((note) => `- ${note}`).join('\n')}` : null,
   ].filter(Boolean).join('\n\n')
-  const quality = buildQualityReport(current, critique, input.intent, input.idea, finalAdherence)
-  // The pipeline already drafted, critiqued, and rewrote up to 3 times. We NEVER
-  // hard-block here: a small local model rarely emits a literal "VERDICT: PASS"
-  // even for solid lyrics, and blocking left the user unable to generate at all.
-  // Instead we always return the best attempt plus its quality report, and the
-  // UI surfaces the score + one-click Fix Issues so the user is the final judge.
-  // The only true failure is producing no usable lyric text at all.
+  let quality = buildQualityReport(current, critique, input.intent, input.idea, finalAdherence, lyricPlan)
+  const rescuePasses = settings.lyricCookMode === 'unbounded'
+    ? Number.POSITIVE_INFINITY
+    : settings.lyricCookMode === 'deep'
+      ? (/qwen3:14b/i.test(model) ? 8 : /qwen3:8b/i.test(model) ? 6 : 3)
+      : (/qwen3:14b/i.test(model) ? 4 : /qwen3:8b/i.test(model) ? 3 : /qwen3:4b/i.test(model) ? 2 : 2)
+  for (let rescueRound = 0; rescueRound < rescuePasses && !quality.generationGate?.ready; rescueRound += 1) {
+    const repaired = await repairAgainstGate(finalModel, current, brief, lyricPlan, quality, `final-${rescueRound + 1}`)
+    if (repaired !== current) {
+      current = repaired
+      const rescueAdherence = await runAdherenceCheck(criticModel, current, input.intent, input.idea)
+      const rescueCritique = [
+        critique,
+        `QUALITY RESCUE ROUND ${rescueRound + 1} TARGETS:\n${quality.generationGate?.reasons.map((reason) => `- ${reason}`).join('\n') ?? '- none'}`,
+        rescueAdherence ? `RESCUE ADHERENCE CHECK:\nSCORE: ${rescueAdherence.score}\nVERDICT: ${rescueAdherence.verdict}\nNOTES:\n${rescueAdherence.notes.map((note) => `- ${note}`).join('\n')}` : null,
+      ].filter(Boolean).join('\n\n')
+      quality = buildQualityReport(current, rescueCritique, input.intent, input.idea, rescueAdherence, lyricPlan)
+      repairs.push(`Quality rescue ${rescueRound + 1}: targeted ${quality.generationGate?.reasons.slice(0, 2).join(' ') || 'final gate blockers.'}`)
+      const rescueDraft = makeDraftSnapshot(`Draft ${drafts.length + 1}`, current, `Quality rescue pass ${rescueRound + 1} targeted the Ready for ACE blockers.`, input.intent, input.idea, drafts[drafts.length - 1]?.lyrics ?? null)
+      drafts.push(rescueDraft)
+      emitWriterProgress({ stage: 'finalizing', note: `Quality rescue completed. Ready for ACE: ${quality.generationGate?.ready ? 'yes' : 'not yet'}.`, draft: rescueDraft })
+      if (settings.lyricCookMode === 'unbounded') {
+        const newScore = quality.score
+        if (newScore > bestQualityScore + 4) {
+          bestQualityScore = newScore
+          stalledRepairRounds = 0
+        } else {
+          stalledRepairRounds += 1
+          if (stalledRepairRounds >= 3) {
+            emitWriterProgress({ stage: 'finalizing', note: 'Quality rescue stopped improving, so DoReMii is preserving the best clean draft and asking for manual help instead of wasting more time.' })
+            break
+          }
+        }
+      }
+    } else {
+      break
+    }
+  }
   if (!sanitizeLyrics(current).trim()) {
     throw new Error('The writer returned no usable lyrics. Try Reroll or a different writer model.')
   }
   return {
+    brief: songBrief,
+    plan: lyricPlan,
+    hooks,
+    sections: sectionDrafts,
+    repairs,
     lyrics: sanitizeLyrics(current),
     draft: sanitizeLyrics(draft),
     drafts,

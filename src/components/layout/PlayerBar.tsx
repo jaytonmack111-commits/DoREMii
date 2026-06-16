@@ -26,7 +26,7 @@ export function PlayerBar() {
       <div className="player-track">
         {nowPlaying ? (
           <>
-            <div className={`np-cover ${theme.spinningVinyl && playing ? 'spin' : ''}`}><Cover hue={250} size="sm" /></div>
+            <div className={`np-cover ${theme.spinningVinyl && playing ? 'spin' : ''}`}><Cover hue={250} size="sm" src={nowPlaying.coverArtPath} /></div>
             <span className="np-meta"><strong className="ellipsis">{nowPlaying.title}</strong><small className="ellipsis">DoReMii · {nowPlaying.mode}</small></span>
             <button className="ghost-icon" onClick={() => setDetail(nowPlaying)} title="Track details"><Info size={15} /></button>
             <button className="ghost-icon" onClick={toggleMiniDock} title="Dock to sidebar"><Minimize2 size={15} /></button>

@@ -526,6 +526,72 @@ div.instrumental-note.idea-area { display: flex; align-items: center; gap: 10px;
 .mini-action.good { border-color: rgba(87, 240, 138, 0.55); color: #57f08a; }
 .mini-action.good:disabled { opacity: 1; filter: none; }
 .mini-action.danger { border-color: rgba(255, 107, 107, 0.55); color: #ff8b8b; }
+.lyric-plan-card {
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  border-radius: calc(var(--radius) - 4px);
+  background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.1), rgba(var(--surface-rgb), 0.32));
+  padding: 10px 12px;
+}
+.lyric-plan-card > summary {
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text);
+}
+.lyric-plan-card > summary span {
+  color: var(--muted);
+  font-size: calc(11px * var(--font-scale));
+  font-weight: 600;
+}
+.lyric-plan-body { display: grid; gap: 10px; margin-top: 10px; }
+.pipeline-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
+  gap: 10px;
+}
+.pipeline-card {
+  min-width: 0;
+  border: 1px solid rgba(var(--border-rgb), 0.38);
+  border-radius: calc(var(--radius) - 4px);
+  background: rgba(var(--surface-rgb), 0.34);
+  padding: 10px 12px;
+}
+.pipeline-card > summary {
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.pipeline-card > summary span {
+  color: var(--muted);
+  font-size: calc(11px * var(--font-scale));
+  font-weight: 700;
+}
+.plan-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 8px;
+}
+.plan-summary-grid span {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border-radius: calc(var(--radius) - 6px);
+  border: 1px solid rgba(var(--border-rgb), 0.34);
+  background: rgba(var(--bg-rgb), 0.26);
+  min-width: 0;
+}
+.plan-summary-grid em {
+  color: var(--muted);
+  font-style: normal;
+  font-size: calc(10px * var(--font-scale));
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
 
 /* Compact, contextual action bar - replaces the big always-on dock. */
 .studio-actionbar {

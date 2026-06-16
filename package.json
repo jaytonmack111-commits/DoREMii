@@ -20,6 +20,7 @@
     "dev:electron": "wait-on http://127.0.0.1:5173 && tsc -p tsconfig.electron.json && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
     "start:electron": "electron .",
     "build": "tsc -b && tsc -p tsconfig.electron.json && vite build",
+    "lyric:bench": "node scripts/lyric-bench.mjs",
     "dist": "npm run build && electron-builder",
     "lint": "eslint .",
     "preview": "vite preview"
@@ -33,6 +34,7 @@
     "files": [
       "dist/**",
       "dist-electron/**",
+      "flux_backend/**",
       "package.json"
     ],
     "win": {

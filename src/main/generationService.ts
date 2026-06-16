@@ -14,6 +14,7 @@ import { DEFAULT_ENGINE_PORT, getDoReMiPaths } from './paths.js'
 import { insertGenerationTask, insertSong, updateGenerationTask } from './database.js'
 import { getEngineSettings } from './modelSettings.js'
 import { engineManager } from './engineManager.js'
+import { generateCoverArt } from './coverArtService.js'
 
 /** Throw a human-readable error instead of letting a raw fetch fail when the
  *  engine isn't up. Every ACE-facing entry point calls this first. */
@@ -422,7 +423,7 @@ async function importAudio(source: string, destPath: string): Promise<boolean> {
 
 export async function pollGeneration(
   aceTaskId: string,
-  meta: { title: string; mode: ModeType },
+  meta: { title: string; mode: ModeType; prompt?: string; lyrics?: string; tags?: string[]; bpm?: number | null; keyscale?: string | null; duration?: number | null },
 ): Promise<GenerationPollResult> {
   let body: QueryResultBody
   try {
@@ -479,16 +480,18 @@ export async function pollGeneration(
     const id = crypto.randomUUID()
     const createdAt = new Date().toISOString()
     const metas = entry.metas || {}
+    const finalPrompt = entry.prompt || meta.prompt || ''
+    const finalLyrics = entry.lyrics || meta.lyrics || ''
     insertSong({
       id,
       title: meta.title,
       mode: meta.mode,
-      prompt: entry.prompt || '',
-      lyrics: entry.lyrics || '',
+      prompt: finalPrompt,
+      lyrics: finalLyrics,
       vocalLanguage: 'en',
-      duration: typeof metas.duration === 'number' ? metas.duration : null,
-      bpm: typeof metas.bpm === 'number' ? metas.bpm : null,
-      keyScale: metas.keyscale || null,
+      duration: typeof metas.duration === 'number' ? metas.duration : meta.duration ?? null,
+      bpm: typeof metas.bpm === 'number' ? metas.bpm : meta.bpm ?? null,
+      keyScale: metas.keyscale || meta.keyscale || null,
       audioPath: destPath,
       sourceTaskId: aceTaskId,
       requestJson: JSON.stringify({
@@ -497,20 +500,35 @@ export async function pollGeneration(
         blueprint: meta,
       }),
       responseJson: JSON.stringify(entry),
+      coverArtPath: null,
+      coverArtStatus: 'queued',
       createdAt,
     })
-    songs.push({
+    const song: SongVersion = {
       id,
       projectId: null,
       title: meta.title,
       mode: meta.mode,
-      prompt: entry.prompt || '',
-      lyrics: entry.lyrics || '',
+      prompt: finalPrompt,
+      lyrics: finalLyrics,
       audioPath: destPath,
       metadataPath: null,
+      coverArtPath: null,
+      coverArtStatus: 'queued',
       favorite: false,
       createdAt,
-    })
+    }
+    songs.push(song)
+    void generateCoverArt({
+      songId: id,
+      title: meta.title,
+      caption: finalPrompt,
+      lyrics: finalLyrics,
+      tags: [...(meta.tags || []), meta.mode].filter(Boolean),
+      bpm: typeof metas.bpm === 'number' ? metas.bpm : meta.bpm ?? null,
+      keyscale: metas.keyscale || meta.keyscale || null,
+      duration: typeof metas.duration === 'number' ? metas.duration : meta.duration ?? null,
+    }).catch(() => undefined)
   }
 
   if (!songs.length) {

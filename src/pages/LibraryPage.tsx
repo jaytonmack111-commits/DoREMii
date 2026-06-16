@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { FolderOpen, Heart, Info, Library, Play, Repeat2, Search, Trash2 } from 'lucide-react'
+import { FolderOpen, Heart, ImagePlus, Info, Library, Play, Repeat2, Search, Trash2 } from 'lucide-react'
 import { Cover } from '../components/ui/Cover'
 import { useAppStore } from '../stores/appStore'
 import { usePlayerStore } from '../stores/playerStore'
@@ -18,6 +18,17 @@ export function LibraryPage({ favoritesOnly }: { favoritesOnly: boolean }) {
   const filtered = songs.filter((s) => !search || `${s.title} ${s.prompt} ${s.mode}`.toLowerCase().includes(search.toLowerCase()))
   const visible = favoritesOnly ? favorites : filtered
 
+  async function generateCover(song: typeof songs[number]) {
+    await window.doReMi.generateCover({
+      songId: song.id,
+      title: song.title,
+      caption: song.prompt,
+      lyrics: song.lyrics,
+      tags: [song.mode],
+    })
+    await useAppStore.getState().refreshLibrary()
+  }
+
   return (
     <section className="page">
       <div className="section-head">
@@ -31,7 +42,7 @@ export function LibraryPage({ favoritesOnly }: { favoritesOnly: boolean }) {
         <div className="card-grid">
           {visible.map((song, index) => (
             <article className="media-card" key={song.id}>
-              <div onClick={() => playSong(song)}><Cover hue={(index * 44 + 240) % 360} size="md" label /></div>
+              <div onClick={() => playSong(song)}><Cover hue={(index * 44 + 240) % 360} size="md" label src={song.coverArtPath} /></div>
               <strong className="ellipsis">{song.title}</strong>
               <small className="ellipsis">{new Date(song.createdAt).toLocaleDateString()} · {song.mode}</small>
               <div className="card-actions">
@@ -39,6 +50,7 @@ export function LibraryPage({ favoritesOnly }: { favoritesOnly: boolean }) {
                 <button onClick={() => setDetail(song)}><Info size={13} /></button>
                 <button className={song.favorite ? 'active' : ''} onClick={() => void toggleFavorite(song.id)}><Heart size={13} /></button>
                 <button onClick={() => void showInFolder(song.id)}><FolderOpen size={13} /></button>
+                <button onClick={() => void generateCover(song)} title="Generate FLUX cover"><ImagePlus size={13} /></button>
                 <button onClick={() => soon('Remix Queue')}><Repeat2 size={13} /></button>
                 <button onClick={() => { if (confirm(`Delete "${song.title}" from DoReMii?`)) void deleteSong(song.id) }}><Trash2 size={13} /></button>
               </div>

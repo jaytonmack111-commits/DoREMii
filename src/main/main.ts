@@ -5,10 +5,13 @@ import { engineManager } from './engineManager.js'
 import { runSetupCheck } from './setup.js'
 import { deleteSong, getDatabase, listLicenses, listPresets, listSongs, renameSong, showSongInFolder, toggleSongFavorite } from './database.js'
 import { createBlueprint, createGeneration, formatWithEngine, pollGeneration } from './generationService.js'
-import { downloadModel, getEngineSettings, listLocalModels, openModelFolder, updateEngineSettings } from './modelSettings.js'
-import { analyzeLyrics, craftLyrics, enhanceText, generateConcept, generateConceptIdea, generateStyleForIdea, isWriterAvailable, listWriterModels, pullOllamaModel, rewriteLyrics, suggestTitle } from './ollamaService.js'
+import { downloadModel, getEngineSettings, listLocalModels, openModelFolder, test4BModels, updateEngineSettings } from './modelSettings.js'
+import { analyzeLyrics, cancelWriterJobs, craftLyrics, enhanceText, generateConcept, generateConceptIdea, generateStyleForIdea, isWriterAvailable, listWriterModels, pullOllamaModel, rewriteLyrics, suggestTitle } from './ollamaService.js'
 import { endRoom, sendToRoom, startRoom } from './writersRoomService.js'
 import { beginEngineJob, endEngineJob, getConductorState, sleepOllama, withWriter } from './aiConductor.js'
+import { cancelCover, generateCoverArt, getCoverStatus, openCoverFolder } from './coverArtService.js'
+import { stopFluxBackend } from './fluxManager.js'
+import { getResourceStatus, setResourceMode } from './resourceService.js'
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
 let quitCleanupStarted = false
@@ -77,11 +80,18 @@ app.whenReady().then(async () => {
   ipcMain.handle('engine:lm:reload', () => engineManager.reloadPreferredLm())
   ipcMain.handle('engine:model:openFolder', (_event, modelId) => openModelFolder(modelId))
   ipcMain.handle('engine:model:download', (_event, modelId) => downloadModel(modelId))
+  ipcMain.handle('models:test4B', () => test4BModels(engineManager.getStatus().loadedLmModel))
+  ipcMain.handle('resources:status', () => getResourceStatus())
+  ipcMain.handle('resources:setMode', (_event, mode) => setResourceMode(mode))
   ipcMain.handle('library:search', () => listSongs())
   ipcMain.handle('library:rename', (_event, id, title) => renameSong(id, title))
   ipcMain.handle('library:favorite', (_event, id) => toggleSongFavorite(id))
   ipcMain.handle('library:delete', (_event, id) => deleteSong(id))
   ipcMain.handle('library:showInFolder', (_event, id) => showSongInFolder(id))
+  ipcMain.handle('cover:generate', (_event, request) => generateCoverArt(request))
+  ipcMain.handle('cover:status', (_event, songId) => getCoverStatus(songId))
+  ipcMain.handle('cover:cancel', (_event, songId) => cancelCover(songId))
+  ipcMain.handle('cover:openFolder', () => openCoverFolder())
   ipcMain.handle('presets:list', () => listPresets())
   ipcMain.handle('licenses:list', () => listLicenses())
   // Generation owns the GPU: sleep Ollama first, release it when a poll ends.
@@ -105,6 +115,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('writer:availability', () => isWriterAvailable())
   ipcMain.handle('writer:models', () => listWriterModels())
   ipcMain.handle('writer:pullModel', (_event, model) => pullOllamaModel(model))
+  ipcMain.handle('writer:cancel', () => cancelWriterJobs())
   ipcMain.handle('writer:analyzeLyrics', (_event, input) => withWriter(() => analyzeLyrics(input)))
   ipcMain.handle('writer:rewriteLyrics', (_event, input) => withWriter(() => rewriteLyrics(input)))
   ipcMain.handle('room:start', (_event, input) => startRoom(input))
@@ -137,8 +148,14 @@ app.on('before-quit', (event) => {
   if (quitCleanupStarted) return
   quitCleanupStarted = true
   event.preventDefault()
+  // Hard fallback: never let cleanup hang the quit. If the sweep takes too
+  // long, force-exit anyway so we don't leave the app half-closed.
+  const hardExit = setTimeout(() => app.exit(0), 9000)
   void Promise.resolve()
-    .then(() => sleepOllama())
-    .then(() => engineManager.shutdown())
-    .finally(() => app.quit())
+    .then(() => { cancelWriterJobs() })          // abort in-flight Ollama streams
+    .then(() => stopFluxBackend().catch(() => undefined)) // kill the FLUX python server
+    .then(() => sleepOllama())                    // unload Ollama models from RAM/VRAM
+    .then(() => engineManager.shutdown())         // kill ACE child + sweep stray python/uv
+    .catch(() => undefined)
+    .finally(() => { clearTimeout(hardExit); app.exit(0) })
 })

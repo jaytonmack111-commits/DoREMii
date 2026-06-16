@@ -27,7 +27,18 @@ export type LmModelId =
   | 'acestep-5Hz-lm-4B'
 
 /** Which heavy AI brain is currently active (VRAM conductor). */
-export type ConductorState = 'idle' | 'writer' | 'engine'
+export type ConductorState = 'idle' | 'writer' | 'engine' | 'cover'
+
+export type ResourceMode = 'keep_usable' | 'balanced' | 'max_quality' | 'manual'
+
+export type CoverArtStatus = 'none' | 'queued' | 'generating' | 'ready' | 'failed' | 'procedural'
+
+export type LyricStrictness = 'relaxed' | 'normal' | 'strict' | 'pro'
+
+export type OllamaContextPreset = 'standard' | 'long' | 'experimental'
+/** fast = single focused pass (~1 call). standard = draft + light critic.
+ *  deep = multi-round critic. unbounded = cook until it passes (slow). */
+export type LyricCookMode = 'fast' | 'standard' | 'deep' | 'unbounded'
 
 export interface EngineSettings {
   preferredLmModel: LmModelId
@@ -36,6 +47,23 @@ export interface EngineSettings {
   experimentalForce4B: boolean
   writerRoomModel: string
   lyricWriterModel: string
+  ideaWriterModel?: string
+  hookWriterModel?: string
+  sectionWriterModel?: string
+  criticModel?: string
+  prosodyModel?: string
+  finalCompilerModel?: string
+  ollamaContextPreset?: OllamaContextPreset
+  lyricCookMode?: LyricCookMode
+  /** Set once the writer pipeline is migrated to the fast-by-default models. */
+  writerPipelineV2?: boolean
+  resourceMode: ResourceMode
+  fluxBackendPath: string
+  coverResolution: '512' | '768' | '1024'
+  coverStylePreset: 'auto' | 'cinematic' | 'graphic_poster' | 'portrait' | 'abstract' | 'object_still_life'
+  genreFusionEnabled: boolean
+  randomIdeaWeirdness: number
+  lyricPlanningStrictness: LyricStrictness
 }
 
 export interface LocalModelInfo {
@@ -67,6 +95,10 @@ export interface BlueprintResult {
   vocalLanguage: string
   instrumental: boolean
   lmModel: string | null
+  brief?: SongBrief | null
+  hooks?: HookCandidate[]
+  sections?: SectionDraft[]
+  plan?: LyricPlan | null
   raw: unknown
   createdAt: string
 }
@@ -96,12 +128,93 @@ export interface SongIntent {
 }
 
 export interface LyricsCraftResult {
+  brief?: SongBrief
+  plan?: LyricPlan
+  hooks?: HookCandidate[]
+  sections?: SectionDraft[]
+  repairs?: string[]
   lyrics: string
   draft: string
   drafts?: LyricsDraftSnapshot[]
   critique: string
   quality: LyricsQualityReport
   model: string
+  createdAt: string
+}
+
+export interface SongBrief {
+  premise: string
+  narrator: string
+  listenerSituation: string
+  emotionalConflict: string
+  hookPromise: string
+  verse1Purpose: string
+  verse2Escalation: string
+  bridgeReveal: string
+  outroResolution: string
+  forbiddenDrift: string[]
+  concreteImages: string[]
+  quality: {
+    relatability: number
+    hookPotential: number
+    genreFit: number
+    specificity: number
+    groundedness: number
+    songShapeReadiness: number
+    issues: string[]
+  }
+  createdAt: string
+}
+
+export interface HookCandidate {
+  id: string
+  label: string
+  lines: string[]
+  score: number
+  scores: {
+    titlePayoff: number
+    singability: number
+    memorability: number
+    emotionalClarity: number
+    topicMatch: number
+    rhymePotential: number
+  }
+  notes: string[]
+  selected?: boolean
+}
+
+export interface SectionDraft {
+  section: string
+  lyrics: string
+  score: number
+  verdict: 'keep' | 'rewrite' | 'cut' | 'expand'
+  purpose: string
+  repairReason?: string
+  lockedLines?: string[]
+}
+
+export interface LyricPlanSection {
+  section: string
+  purpose: string
+  lineCount: number
+  rhymeScheme: string
+  syllableMin: number
+  syllableMax: number
+  mustDo: string[]
+  avoid: string[]
+}
+
+export interface LyricPlan {
+  songPremise: string
+  emotionalAngle: string
+  relatableListenerSituation: string
+  pointOfView: string
+  vibe: string
+  genre: string
+  genreFusion: string | null
+  hookPhraseTarget: string
+  forbiddenDriftWords: string[]
+  sectionGoals: LyricPlanSection[]
   createdAt: string
 }
 
@@ -119,11 +232,20 @@ export interface WriterProgressEvent {
   stage: string
   note?: string
   draft?: LyricsDraftSnapshot
+  brief?: SongBrief
+  hooks?: HookCandidate[]
+  section?: SectionDraft
+  repair?: string
 }
 
 export interface LyricsQualityReport {
   score: number
   verdict: 'pass' | 'needs_work' | 'fail'
+  generationGate?: {
+    status: 'draft' | 'needs_repair' | 'ready_for_ace' | 'pro_override'
+    ready: boolean
+    reasons: string[]
+  }
   summary: string
   issues: string[]
   strengths: string[]
@@ -190,6 +312,13 @@ export interface LyricsQualityReport {
     score: number
     verdict: 'pass' | 'needs_work' | 'fail'
     notes: string[]
+  }
+  planCompliance?: {
+    rhymeScheme: 'pass' | 'needs_work' | 'fail'
+    syllablePlan: 'pass' | 'needs_work' | 'fail'
+    relatabilityScore: number
+    vibeMatch: 'pass' | 'needs_work' | 'fail'
+    issues: string[]
   }
   modelCritique: string | null
 }
@@ -260,6 +389,7 @@ export interface SetupCheckResult {
     exports: string
     engineArtifacts: string
     imports: string
+    covers: string
   }
 }
 
@@ -313,8 +443,57 @@ export interface SongVersion {
   lyrics: string
   audioPath: string
   metadataPath: string | null
+  coverArtPath: string | null
+  coverArtStatus: CoverArtStatus
   favorite: boolean
   createdAt: string
+}
+
+export interface CoverArtRequest {
+  songId?: string
+  title: string
+  caption: string
+  lyrics: string
+  tags: string[]
+  bpm?: number | null
+  keyscale?: string | null
+  duration?: number | null
+  forceFlux?: boolean
+}
+
+export interface CoverArtResult {
+  songId?: string
+  status: CoverArtStatus
+  coverArtPath: string | null
+  prompt: string
+  backend: string
+  error: string | null
+}
+
+export interface ResourceStatus {
+  mode: ResourceMode
+  conductor: ConductorState
+  ace: EngineStatus
+  ollamaLoadedModels: string[]
+  flux: {
+    configured: boolean
+    status: 'missing' | 'configured' | 'running' | 'failed'
+    backendPath: string
+    lastError: string | null
+  }
+  estimatedPressure: 'low' | 'medium' | 'high'
+  owner: ConductorState
+}
+
+export interface ModelHealthProbe {
+  id: string
+  role: string
+  installed: boolean
+  loadable: boolean
+  currentlyLoaded: boolean
+  failedLastRun: boolean
+  fallbackActive: boolean
+  message: string
 }
 
 export interface GenerationPollResult {
@@ -354,11 +533,18 @@ export interface DoReMiApi {
   reloadPreferredLm: () => Promise<EngineStatus>
   openModelFolder: (modelId: string) => Promise<void>
   downloadModel: (modelId: string) => Promise<string>
+  test4BModels: () => Promise<ModelHealthProbe[]>
+  getResourceStatus: () => Promise<ResourceStatus>
+  setResourceMode: (mode: ResourceMode) => Promise<ResourceStatus>
   searchLibrary: () => Promise<SongVersion[]>
   renameSong: (id: string, title: string) => Promise<SongVersion[]>
   toggleSongFavorite: (id: string) => Promise<SongVersion[]>
   deleteSong: (id: string) => Promise<SongVersion[]>
   showSongInFolder: (id: string) => Promise<void>
+  generateCover: (request: CoverArtRequest) => Promise<CoverArtResult>
+  getCoverStatus: (songId?: string) => Promise<CoverArtResult | null>
+  cancelCover: (songId?: string) => Promise<void>
+  openCoverFolder: () => Promise<void>
   getPresets: () => Promise<Preset[]>
   getLicenses: () => Promise<LicenseNotice[]>
   createGeneration: (request: GenerationRequest) => Promise<GenerationTask>
@@ -382,6 +568,7 @@ export interface DoReMiApi {
   getWriterAvailability: () => Promise<WriterAvailability>
   listWriterModels: () => Promise<string[]>
   pullOllamaModel: (model: string) => Promise<string>
+  cancelWriter: () => Promise<{ canceled: boolean }>
   craftLyrics: (input: {
     idea: string
     tags: string[]

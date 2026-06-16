@@ -12,7 +12,7 @@ const LM_OPTIONS: { id: LmModelId; label: string; detail: string }[] = [
   { id: 'acestep-5Hz-lm-4B', label: '4B - best planner', detail: 'Slower and experimental on 8 GB VRAM.' },
 ]
 
-const OLLAMA_ROLE_MODELS = ['qwen3:4b', 'qwen3:8b', 'qwen3:14b', 'qwen3:1.7b', 'llama3.2:3b']
+const OLLAMA_ROLE_MODELS = ['qwen3:4b', 'qwen2.5:1.5b', 'qwen3:8b', 'qwen3:14b', 'qwen3:1.7b', 'llama3.2:3b']
 
 export function SettingsPage() {
   const { theme, userPresets, applyNamedTheme } = useThemeStore()
@@ -74,7 +74,7 @@ export function SettingsPage() {
     }
   }
 
-  async function updateOllamaRole(patch: Partial<Pick<EngineSettings, 'writerRoomModel' | 'lyricWriterModel'>>) {
+  async function updateOllamaRole(patch: Partial<EngineSettings>) {
     const settings = await window.doReMi.updateEngineSettings(patch)
     setEngineSettings(settings)
     toast('Ollama role model updated')
@@ -160,17 +160,39 @@ export function SettingsPage() {
             </label>
             <label>Deep lyric writer model
               <select
-                value={engineSettings?.lyricWriterModel ?? 'qwen3:14b'}
+                value={engineSettings?.lyricWriterModel ?? 'qwen3:4b'}
                 onChange={(e) => void updateOllamaRole({ lyricWriterModel: e.target.value })}
               >
-                {OLLAMA_ROLE_MODELS.map((model) => <option key={model} value={model}>{model}{model === 'qwen3:8b' ? ' - default lyric drafter' : model === 'qwen3:14b' ? ' - deep rewrite / critic' : ''}</option>)}
+                {OLLAMA_ROLE_MODELS.map((model) => <option key={model} value={model}>{model}{model === 'qwen3:4b' ? ' - fast default' : model === 'qwen3:8b' ? ' - stronger' : model === 'qwen3:14b' ? ' - deep rewrite / critic' : model === 'qwen2.5:1.5b' ? ' - lightest, very fast' : ''}</option>)}
+              </select>
+            </label>
+            <label>Ollama context window
+              <select
+                value={engineSettings?.ollamaContextPreset ?? 'standard'}
+                onChange={(e) => void updateOllamaRole({ ollamaContextPreset: e.target.value as EngineSettings['ollamaContextPreset'] })}
+              >
+                <option value="standard">Standard - 16k context (recommended)</option>
+                <option value="long">Long - 32k context (slower)</option>
+                <option value="experimental">Experimental - up to 64k context (much slower)</option>
+              </select>
+            </label>
+            <label>Lyric flow (speed vs depth)
+              <select
+                value={engineSettings?.lyricCookMode ?? 'fast'}
+                onChange={(e) => void updateOllamaRole({ lyricCookMode: e.target.value as EngineSettings['lyricCookMode'] })}
+              >
+                <option value="fast">Fast - one focused pass (~1-2 min, recommended)</option>
+                <option value="standard">Balanced - draft + a light critic round</option>
+                <option value="deep">Deep - multi-round critic polish (slower)</option>
+                <option value="unbounded">Let it cook - no wall-clock stop, cancel anytime</option>
               </select>
             </label>
           </div>
-          <div className="inline-note"><Brain size={14} /> Room chat prefers {engineSettings?.writerRoomModel ?? 'qwen3:4b'}; lyric drafting prefers {engineSettings?.lyricWriterModel ?? 'qwen3:8b'}. Use 14B for slower deep rewrite/critic passes.</div>
+          <div className="inline-note"><Brain size={14} /> Fast flow writes the whole song in one pass with {engineSettings?.lyricWriterModel ?? 'qwen3:4b'} - a blueprint in a couple minutes instead of 30+. Bigger models and the deeper flows are opt-in. qwen2.5:1.5b is the lightest, fastest option.</div>
           <div className="chip-wrap">
             <button className="chip on" disabled={modelBusy} onClick={() => void pullOllama(engineSettings?.writerRoomModel ?? 'qwen3:4b')}><Download size={13} /> Pull Room Model</button>
             <button className="chip" disabled={modelBusy} onClick={() => void pullOllama('qwen3:4b')}><Download size={13} /> Pull qwen3:4b</button>
+            <button className="chip" disabled={modelBusy} onClick={() => void pullOllama('qwen2.5:1.5b')}><Download size={13} /> Pull qwen2.5:1.5b</button>
           </div>
           <div className="model-selector">
             <label>Preferred lyric / planning model

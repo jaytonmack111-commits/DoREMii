@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Download, FolderOpen, Heart, Music2, Play, Repeat2, RotateCcw, Save, Trash2, X } from 'lucide-react'
+import { Download, FolderOpen, Heart, ImagePlus, Music2, Play, Repeat2, RotateCcw, Save, Trash2, X } from 'lucide-react'
 import { Cover } from '../ui/Cover'
 import { useAppStore } from '../../stores/appStore'
 import { usePlayerStore } from '../../stores/playerStore'
@@ -7,7 +7,7 @@ import { useUiStore } from '../../stores/uiStore'
 
 export function TrackDetailDrawer() {
   const { detail, setDetail, soon } = useUiStore()
-  const { songs, renameSong, toggleFavorite, deleteSong, showInFolder } = useAppStore()
+  const { songs, renameSong, toggleFavorite, deleteSong, showInFolder, refreshLibrary } = useAppStore()
   const playSong = usePlayerStore((s) => s.playSong)
   const liveDetail = detail ? songs.find((song) => song.id === detail.id) ?? detail : null
   if (!liveDetail) return null
@@ -22,7 +22,7 @@ export function TrackDetailDrawer() {
         </header>
         <div className="drawer-body">
           <div className="detail-hero">
-            <Cover hue={250} size="lg" label />
+            <Cover hue={250} size="lg" label src={liveDetail.coverArtPath} />
             <div>
               <h3>{liveDetail.title}</h3>
               <small>{liveDetail.mode} · {new Date(liveDetail.createdAt).toLocaleString()}</small>
@@ -44,6 +44,18 @@ export function TrackDetailDrawer() {
             <button className="ghost-btn" onClick={() => soon('Regenerate from seed')}><RotateCcw size={14} /> Regenerate</button>
             <button className="ghost-btn" onClick={() => soon('Remix Queue')}><Repeat2 size={14} /> Remix</button>
             <button className="ghost-btn" onClick={() => soon('Export Center')}><Download size={14} /> Export</button>
+            <button
+              className="ghost-btn"
+              onClick={() => {
+                void window.doReMi.generateCover({
+                  songId: liveDetail.id,
+                  title: liveDetail.title,
+                  caption: liveDetail.prompt,
+                  lyrics: liveDetail.lyrics,
+                  tags: [liveDetail.mode],
+                }).then(() => refreshLibrary())
+              }}
+            ><ImagePlus size={14} /> Generate Cover</button>
             <button className="ghost-btn" onClick={() => void toggleFavorite(liveDetail.id)}><Heart size={14} /> {liveDetail.favorite ? 'Unfavorite' : 'Favorite'}</button>
             <button className="ghost-btn" onClick={() => void showInFolder(liveDetail.id)}><FolderOpen size={14} /> Folder</button>
             <button className="ghost-btn danger" onClick={() => { if (confirm(`Delete "${liveDetail.title}" from DoReMii?`)) void deleteSong(liveDetail.id) }}><Trash2 size={14} /> Delete</button>

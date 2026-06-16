@@ -53,7 +53,7 @@ export function HomePage() {
         <div className="card-grid">
           {songs.slice(0, 8).map((song, index) => (
             <article className="media-card" key={song.id} onClick={() => playSong(song)}>
-              <Cover hue={(index * 48 + 260) % 360} size="md" label />
+              <Cover hue={(index * 48 + 260) % 360} size="md" label src={song.coverArtPath} />
               <strong className="ellipsis">{song.title}</strong>
               <small className="ellipsis">{song.mode} · DoReMii</small>
               <button className="play-fab sm"><Play size={14} /></button>
@@ -74,7 +74,7 @@ export function HomePage() {
         {songs.length ? songs.slice(0, 5).map((song, index) => (
           <div className="track-row" key={song.id} onClick={() => playSong(song)}>
             <span className="rank">{String(index + 1).padStart(2, '0')}</span>
-            <Cover hue={(index * 40 + 200) % 360} size="sm" label />
+            <Cover hue={(index * 40 + 200) % 360} size="sm" label src={song.coverArtPath} />
             <span className="track-row-meta"><strong className="ellipsis">{song.title}</strong><small className="ellipsis">{song.prompt.slice(0, 60)}</small></span>
             <button className="ghost-icon" onClick={(e) => { e.stopPropagation(); setDetail(song) }}><Info size={15} /></button>
             <button className="ghost-icon"><Heart size={15} /></button>

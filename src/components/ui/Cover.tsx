@@ -2,13 +2,15 @@ import { useMemo } from 'react'
 
 /** Procedural synthwave cover art. Deterministic per `hue` + `seed`, so a
  *  song always keeps the same artwork between renders and sessions. */
-export function Cover({ hue, seed = 0, size = 'md', label }: {
+export function Cover({ hue, seed = 0, size = 'md', label, src }: {
   hue: number
   seed?: number
   size?: 'sm' | 'md' | 'lg'
   label?: boolean
+  src?: string | null
 }) {
   void label // retained for call-site compatibility; art no longer needs the glyph
+  const mediaSrc = src ? `doremi-media://cover?path=${encodeURIComponent(src)}` : null
   const variant = Math.abs(Math.round(hue + seed * 7)) % 3
   const h2 = (hue + 60) % 360
 
@@ -67,7 +69,7 @@ export function Cover({ hue, seed = 0, size = 'md', label }: {
     >
       <span
         className="cover-art"
-        style={{ backgroundImage: `url("data:image/svg+xml,${encodeURIComponent(svg)}")` }}
+        style={{ backgroundImage: mediaSrc ? `url("${mediaSrc}")` : `url("data:image/svg+xml,${encodeURIComponent(svg)}")` }}
       />
     </div>
   )

@@ -60,6 +60,8 @@ function migrate(database: Database.Database) {
       response_json TEXT,
       audio_path TEXT NOT NULL,
       metadata_path TEXT,
+      cover_art_path TEXT,
+      cover_art_status TEXT NOT NULL DEFAULT 'procedural',
       source_task_id TEXT,
       parent_song_id TEXT,
       favorite INTEGER NOT NULL DEFAULT 0,
@@ -112,6 +114,14 @@ function migrate(database: Database.Database) {
       notice_text TEXT NOT NULL
     );
   `)
+  const columns = database.prepare('PRAGMA table_info(song_versions)').all() as { name: string }[]
+  const columnNames = new Set(columns.map((column) => column.name))
+  if (!columnNames.has('cover_art_path')) {
+    database.prepare('ALTER TABLE song_versions ADD COLUMN cover_art_path TEXT').run()
+  }
+  if (!columnNames.has('cover_art_status')) {
+    database.prepare("ALTER TABLE song_versions ADD COLUMN cover_art_status TEXT NOT NULL DEFAULT 'procedural'").run()
+  }
 }
 
 function seed(database: Database.Database) {
@@ -144,6 +154,13 @@ function seed(database: Database.Database) {
       experimentalForce4B: true,
       writerRoomModel: 'qwen3:4b',
       lyricWriterModel: 'qwen3:8b',
+      resourceMode: 'keep_usable',
+      fluxBackendPath: '',
+      coverResolution: '768',
+      coverStylePreset: 'auto',
+      genreFusionEnabled: false,
+      randomIdeaWeirdness: 35,
+      lyricPlanningStrictness: 'strict',
     }
     database.prepare('INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)').run('engine', JSON.stringify(defaults), now)
   }
@@ -183,11 +200,11 @@ export function setSetting<T>(key: string, value: T): T {
 
 export function listSongs(): SongVersion[] {
   return getDatabase()
-    .prepare('SELECT id, project_id as projectId, title, mode, prompt, lyrics, audio_path as audioPath, metadata_path as metadataPath, favorite, created_at as createdAt FROM song_versions ORDER BY created_at DESC')
+    .prepare('SELECT id, project_id as projectId, title, mode, prompt, lyrics, audio_path as audioPath, metadata_path as metadataPath, cover_art_path as coverArtPath, cover_art_status as coverArtStatus, favorite, created_at as createdAt FROM song_versions ORDER BY created_at DESC')
     .all()
     .map((row) => {
       const song = row as SongVersion & { favorite: number | boolean }
-      return { ...song, favorite: Boolean(song.favorite) }
+      return { ...song, coverArtPath: song.coverArtPath ?? null, coverArtStatus: song.coverArtStatus ?? 'procedural', favorite: Boolean(song.favorite) }
     })
 }
 
@@ -218,7 +235,7 @@ export function deleteSong(id: string): SongVersion[] {
     getDatabase().prepare('DELETE FROM collection_items WHERE song_version_id = ?').run(id)
     getDatabase().prepare('DELETE FROM song_versions WHERE id = ?').run(id)
   })()
-  for (const filePath of [song.audioPath, song.metadataPath].filter(Boolean)) {
+  for (const filePath of [song.audioPath, song.metadataPath, song.coverArtPath].filter(Boolean)) {
     try {
       if (filePath && fs.existsSync(filePath)) fs.rmSync(filePath)
     } catch {
@@ -248,6 +265,8 @@ export interface InsertSongInput {
   sourceTaskId: string | null
   requestJson: string | null
   responseJson: string | null
+  coverArtPath?: string | null
+  coverArtStatus?: string | null
   createdAt: string
 }
 
@@ -257,14 +276,21 @@ export function insertSong(row: InsertSongInput) {
       INSERT INTO song_versions (
         id, project_id, title, mode, prompt, lyrics, vocal_language, seed, duration, bpm,
         key_scale, time_signature, model, lm_model, performance_preset, request_json,
-        response_json, audio_path, metadata_path, source_task_id, parent_song_id, favorite, created_at
+        response_json, audio_path, metadata_path, cover_art_path, cover_art_status, source_task_id, parent_song_id, favorite, created_at
       ) VALUES (
         @id, NULL, @title, @mode, @prompt, @lyrics, @vocalLanguage, NULL, @duration, @bpm,
         @keyScale, NULL, NULL, NULL, NULL, @requestJson,
-        @responseJson, @audioPath, NULL, @sourceTaskId, NULL, 0, @createdAt
+        @responseJson, @audioPath, NULL, @coverArtPath, @coverArtStatus, @sourceTaskId, NULL, 0, @createdAt
       )
     `)
-    .run(row)
+    .run({ ...row, coverArtPath: row.coverArtPath ?? null, coverArtStatus: row.coverArtStatus ?? 'procedural' })
+}
+
+export function updateSongCover(id: string, coverArtPath: string | null, coverArtStatus: string): SongVersion | null {
+  getDatabase()
+    .prepare('UPDATE song_versions SET cover_art_path = ?, cover_art_status = ? WHERE id = ?')
+    .run(coverArtPath, coverArtStatus, id)
+  return getSongById(id)
 }
 
 export function listPresets(): Preset[] {
